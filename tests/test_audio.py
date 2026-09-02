@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from myvoice.audio import AACEncoder, AudioAssembler, AudioProbe, AudioValidator, executable, generate_test_tone, run_checked
+from myvoice.audio import AACEncoder, AudioAssembler, AudioProbe, AudioValidator, ReferenceQualityScorer, executable, generate_test_tone, run_checked
 from myvoice.errors import InputValidationError
+from myvoice.models import AudioMetadata
 
 
 def test_wave_probe_and_minimum_duration(tmp_path: Path) -> None:
@@ -36,6 +37,18 @@ def test_default_validator_accepts_one_short_audio_file(tmp_path: Path) -> None:
 
     assert len(metadata) == 1
     assert not [item for item in issues if item.severity == "fail"]
+
+
+def test_reference_quality_prefers_clean_prompt_in_useful_window() -> None:
+    scorer = ReferenceQualityScorer()
+    clean = AudioMetadata("clean.wav", 8.0, 24000, 1, "pcm_s16le", -3.0, 0.03)
+    long_noisy = AudioMetadata("long.wav", 18.0, 24000, 1, "pcm_s16le", -0.05, 0.45)
+
+    clean_score, clean_reasons = scorer.score(clean)
+    noisy_score, _ = scorer.score(long_noisy)
+
+    assert clean_score > noisy_score
+    assert "권장 길이(6~10초)" in clean_reasons
 
 
 def test_assembler_adds_pause(tmp_path: Path) -> None:

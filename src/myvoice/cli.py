@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-import importlib.metadata
-import importlib.util
 import json
-import platform
-import shutil
-import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -14,12 +9,11 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .audio import executable
 from .config import AppPaths
+from .desktop_api import diagnostic_snapshot
 from .errors import MyVoiceError
 from .services import EnrollmentService, GenerationService
 from .storage import JobRepository, VoiceProfileRepository
-from .tts import inspect_mps_runtime, resolve_torch_device
 
 
 console = Console()
@@ -216,45 +210,24 @@ def doctor() -> None:
     """Diagnose the local runtime without changing it."""
     paths, _, _, _ = dependencies()
     table = Table("Check", "Result", "Detail")
-    python_ok = (3, 11) <= sys.version_info[:2] < (3, 13)
-    table.add_row("Python", "OK" if python_ok else "FAIL", sys.version.split()[0])
-    table.add_row("FFmpeg", "OK" if executable("ffmpeg") else "FAIL", executable("ffmpeg") or "not found")
-    table.add_row("FFprobe", "OK" if executable("ffprobe") else "FAIL", executable("ffprobe") or "not found")
-    for package, module in (("chatterbox-tts", "chatterbox"), ("torch", "torch"), ("torchaudio", "torchaudio")):
-        found = importlib.util.find_spec(module) is not None
-        try:
-            version = importlib.metadata.version(package) if found else "not installed"
-        except importlib.metadata.PackageNotFoundError:
-            version = "installed, version unknown"
-        table.add_row(package, "OK" if found else "MISSING", version)
-    if platform.system() == "Darwin":
-        machine = platform.machine()
-        native = machine == "arm64"
-        table.add_row(
-            "macOS",
-            "OK",
-            f"{platform.mac_ver()[0] or 'unknown'} · {machine}",
-        )
-        table.add_row(
-            "Apple Silicon",
-            "OK" if native else "WARN",
-            "native arm64" if native else "Intel or Rosetta; synthesis will use CPU",
-        )
-        if importlib.util.find_spec("torch") is not None:
-            import torch
-
-            mps = inspect_mps_runtime(torch)
-            table.add_row("MPS built", "OK" if mps.built else "FAIL", str(mps.built))
-            table.add_row("MPS available", "OK" if mps.available else "WARN", str(mps.available))
-            table.add_row("MPS operation", "OK" if mps.functional else "WARN", mps.detail)
-            selected = resolve_torch_device(
-                "auto", torch, system_name="Darwin", machine=machine
-            )
-            table.add_row("Auto device", "OK" if selected == "mps" else "WARN", selected)
-    table.add_row("Data directory", "OK", str(paths.data_dir))
-    free = shutil.disk_usage(paths.data_dir).free / (1024 ** 3)
-    table.add_row("Free disk", "OK" if free >= 5 else "WARN", f"{free:.1f} GiB")
+    for check in diagnostic_snapshot(paths)["checks"]:
+        table.add_row(check["name"], check["status"].upper(), check["detail"])
     console.print(table)
+
+
+@app.command("desktop-api", hidden=True)
+def desktop_api(request: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)]) -> None:
+    """Run one machine-readable request for the native desktop app."""
+    from .desktop_api import DesktopAPI
+
+    try:
+        payload = json.loads(request.read_text(encoding="utf-8"))
+        code = DesktopAPI().run(payload)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        DesktopAPI().emit("result", ok=False, error=f"Invalid desktop request: {exc}", exit_code=2)
+        code = 2
+    if code:
+        raise typer.Exit(code)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,14 @@
 # MyVoice
 
-현재 버전은 1.2.0입니다.
+현재 버전은 2.0.0입니다.
 
-MyVoice는 사용자 본인의 음성 샘플을 재사용 가능한 Voice Profile로 등록하고, TXT/Markdown 대본을 세그먼트별로 합성해 AAC-LC 내레이션으로 만드는 로컬 우선 CLI/TUI 프로젝트입니다.
+MyVoice는 사용자 본인의 음성 샘플을 재사용 가능한 Voice Profile로 등록하고, TXT/Markdown 대본을 세그먼트별로 합성해 AAC-LC 내레이션으로 만드는 로컬 우선 macOS 데스크톱/CLI 프로젝트입니다.
 
 ## 현재 구현 범위
 
 - reference 음성의 형식·무음·레벨 품질 검증
-- mono 24 kHz PCM16 reference 전처리
+- 앞뒤 무음 제거, EBU R128 기반 음량 안정화, mono 24 kHz PCM16 reference 전처리
+- 길이·무음 비율·레벨을 종합한 reference 품질 점수와 최적 primary 자동 선택
 - Voice Profile과 원본 해시·동의 정보 저장
 - TXT 및 Markdown AST 파싱
 - YAML 발음 사전과 결정론적 텍스트 정규화
@@ -16,6 +17,7 @@ MyVoice는 사용자 본인의 음성 샘플을 재사용 가능한 Voice Profil
 - 세그먼트 WAV 캐시, 중단 후 resume, 선택 segment regenerate
 - master WAV 병합 및 FFmpeg AAC-LC mono 192 kbps 인코딩
 - Typer/Rich CLI와 Bash/Zsh에서 동작하는 기본 대화형 터미널 메뉴
+- 등록·생성·Voice 관리·Job 재개/세그먼트 재생성·환경 진단을 제공하는 네이티브 macOS SwiftUI 앱
 - 모델 다운로드가 필요 없는 test-tone 기반 통합 테스트
 
 ## 요구 환경
@@ -73,11 +75,31 @@ Apple Silicon에서 `MPS built`, `MPS available`, `MPS operation`, `Auto device`
 - 배경 음악, 다른 화자, 환경 소음, 강한 리버브와 긴 무음이 없는 원본
 - 과도한 노이즈 제거, 음정 변경, 속도 변경이나 여러 녹음을 인위적으로 이어 붙이지 않은 음성
 
-Chatterbox Multilingual은 화자 조건에 앞부분 최대 약 6초, 생성 조건에 최대 약 10초를 사용합니다. 더 긴 파일이 반드시 더 자연스러운 결과를 만들지는 않습니다. 여러 파일을 등록하면 MyVoice는 가장 긴 유효 파일을 primary reference로 선택하므로, 가장 긴 파일이 가장 깨끗하고 원하는 말투를 담고 있는지 확인하세요.
+Chatterbox Multilingual은 화자 조건에 앞부분 최대 약 6초, 생성 조건에 최대 약 10초를 사용합니다. 더 긴 파일이 반드시 더 자연스러운 결과를 만들지는 않습니다. 여러 파일을 등록하면 MyVoice는 각 파일의 앞뒤 무음을 제거하고 목표 음량으로 안정화한 뒤, 유효 길이·무음 비율·peak level을 점수화해 가장 깨끗한 파일을 primary reference로 선택합니다. 원본의 음색을 훼손할 수 있는 강한 denoise, pitch 또는 속도 변경은 적용하지 않습니다.
 
 입력 형식은 WAV, FLAC, AAC, M4A, MP3, OGG를 허용하며 FFmpeg가 내부 WAV 형식으로 변환합니다.
 
 ## 기본 사용법
+
+### macOS 데스크톱 앱
+
+개발 환경에서 앱을 빌드하고 실행합니다.
+
+```bash
+./script/build_and_run.sh
+```
+
+생성된 앱은 `dist/MyVoiceDesktop.app`에 있습니다. 앱의 사이드바에서 다음 기능을 모두 사용할 수 있습니다.
+
+- 음성 샘플 폴더 분석과 Voice Profile 등록·교체
+- TXT/Markdown 대본, Voice Profile, 출력 AAC, 처리 장치, 발음 사전 선택 후 생성 또는 dry run
+- Voice Profile 상세 확인과 삭제
+- 생성 Job 및 세그먼트 상태 확인, 실패한 Job 재개, 텍스트 수정 후 개별 세그먼트 재생성
+- Python, FFmpeg, Chatterbox, PyTorch와 Apple Silicon MPS 진단
+
+앱은 기본적으로 프로젝트의 `.venv/bin/myvoice`, Homebrew 설치 경로, `PATH` 순서로 기존 CLI 백엔드를 찾습니다. 별도 위치에 설치했다면 MyVoice 설정에서 실행 파일의 절대 경로를 지정하세요. 앱과 CLI는 같은 application data 폴더와 같은 서비스 로직을 사용하므로 한쪽에서 만든 Voice와 Job을 다른 쪽에서도 이어서 사용할 수 있습니다.
+
+### CLI/TUI
 
 본인 목소리이거나 명시적 사용 권한이 있다는 확인과 함께 Voice Profile을 만듭니다.
 
@@ -121,7 +143,7 @@ uv run myvoice regenerate <job-id> seg-0023
 uv run myvoice regenerate <job-id> seg-0023 --text "수정한 낭독 문장입니다."
 ```
 
-인자 없이 실행하면 별도의 GUI나 전체화면 프레임워크 없이, 현재 Bash/Zsh 터미널 안에서 숫자로 조작하는 메뉴가 열립니다.
+기존 CLI 인터페이스는 2.0.0에서도 그대로 유지됩니다. 인자 없이 실행하면 현재 Bash/Zsh 터미널 안에서 숫자로 조작하는 메뉴가 열립니다.
 
 ```bash
 uv run myvoice
@@ -167,6 +189,8 @@ Voice Profile에는 전처리된 reference 음성과 원본 해시가 들어갑�
 
 ```bash
 uv run pytest
+swift test
+./script/build_and_run.sh --verify
 ```
 
 테스트는 실제 Chatterbox 모델 대신 짧은 PCM tone을 생성해 enrollment, segmentation, resume, regenerate, WAV assembly 경로를 검증합니다. 실제 모델 smoke test와 청취 품질 평가는 별도의 GPU/MPS 환경에서 수행해야 합니다.
@@ -200,10 +224,10 @@ uv run myvoice inspect <job-id>
 
 ## 제한 사항
 
-- MVP의 enrollment는 모델 fine-tuning이 아니라 전처리 reference를 저장하는 방식입니다.
-- Chatterbox V3가 현재 여러 reference를 한 호출에 직접 받지 않으므로, 가장 긴 유효 reference를 primary prompt로 사용합니다. 다른 reference는 profile에 보존됩니다.
+- Enrollment는 모델 fine-tuning이 아니라 품질 분석과 전처리를 거친 reference를 저장하는 방식입니다.
+- Chatterbox V3가 현재 여러 reference를 한 호출에 직접 받지 않으므로, 품질 점수가 가장 높은 유효 reference를 primary prompt로 사용합니다. 다른 reference와 각 품질 분석 결과는 profile에 보존됩니다.
 - 강한 denoise와 자동 음질 복원은 음색 손상을 피하기 위해 구현하지 않았습니다.
-- 대화형 터미널 메뉴는 enrollment, 저장된 voice 선택, dry-run, 전체 생성을 제공합니다. 세그먼트별 상세 편집·재생은 CLI의 `inspect`와 `regenerate`를 사용합니다.
+- 터미널 TUI는 빠른 등록과 생성 흐름에 집중하며, 전체 관리 기능은 macOS 앱 또는 개별 CLI 명령에서 제공합니다.
 - Chatterbox가 생성하는 오디오에는 upstream 프로젝트의 Perth 비가청 워터마크가 포함됩니다.
 - 모델 및 weight의 라이선스와 배포 조건은 사용 시점에 다시 검토하세요.
 

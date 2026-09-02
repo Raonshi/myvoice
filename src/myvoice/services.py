@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .audio import AACEncoder, AudioAssembler, AudioPreprocessor, AudioProbe, AudioValidator
+from .audio import AACEncoder, AudioAssembler, AudioPreprocessor, AudioProbe, AudioValidator, ReferenceQualityScorer
 from .errors import InputValidationError, JobStateError, TTSError
 from .models import GenerationJob, SynthesisRequest, VoiceProfile, utc_now
 from .storage import JobRepository, VoiceProfileRepository
@@ -22,10 +22,19 @@ def _noop_progress(event: str, payload: dict) -> None:
 
 
 class EnrollmentService:
-    def __init__(self, voices: VoiceProfileRepository, validator: AudioValidator | None = None, preprocessor: AudioPreprocessor | None = None):
+    def __init__(
+        self,
+        voices: VoiceProfileRepository,
+        validator: AudioValidator | None = None,
+        preprocessor: AudioPreprocessor | None = None,
+        probe: AudioProbe | None = None,
+        scorer: ReferenceQualityScorer | None = None,
+    ):
         self.voices = voices
         self.validator = validator or AudioValidator()
         self.preprocessor = preprocessor or AudioPreprocessor()
+        self.probe = probe or AudioProbe()
+        self.scorer = scorer or ReferenceQualityScorer()
 
     def enroll(
         self,
@@ -51,22 +60,36 @@ class EnrollmentService:
         references_dir = staging / "references"
         try:
             references: list[str] = []
+            quality: list[dict] = []
             for index, item in enumerate(metadata, 1):
                 destination = references_dir / f"{index:03d}.wav"
                 self.preprocessor.process(Path(item.path), destination)
                 references.append(str(Path("references") / destination.name))
-                progress("enroll.reference", {"completed": index, "total": len(metadata), "source": item.path})
-            longest = max(range(len(metadata)), key=lambda idx: metadata[idx].duration_seconds)
+                prepared = self.probe.probe(destination)
+                score, reasons = self.scorer.score(prepared)
+                quality.append({
+                    "reference": references[-1], "source": item.path, "score": score,
+                    "duration_seconds": prepared.duration_seconds,
+                    "peak_dbfs": prepared.peak_dbfs, "silence_ratio": prepared.silence_ratio,
+                    "reasons": reasons,
+                })
+                progress("enroll.reference", {
+                    "completed": index, "total": len(metadata), "source": item.path,
+                    "quality_score": score,
+                })
+            best = max(range(len(quality)), key=lambda idx: (quality[idx]["score"], -idx))
             profile = VoiceProfile(
                 id=f"voice-{uuid.uuid4().hex}", name=name, language=language,
                 engine=engine_name, engine_model="v3", created_at=utc_now(),
-                references=references, primary_reference=references[longest],
+                references=references, primary_reference=references[best],
                 sample_count=len(metadata), total_duration_seconds=sum(item.duration_seconds for item in metadata),
                 consent_confirmed=True,
                 metadata={
                     "source_sha256": [item.sha256 for item in metadata],
                     "warnings": [issue.message for issue in issues if issue.severity == "warning"],
                     "profile_type": "reference_audio",
+                    "reference_quality": quality,
+                    "selection_method": "signal_quality_v2",
                 },
             )
             final = self.voices.root / name
@@ -86,7 +109,10 @@ class EnrollmentService:
             else:
                 staging.rename(final)
             self.voices.save(profile, replace=True)
-            progress("enroll.completed", {"name": name, "samples": len(metadata)})
+            progress("enroll.completed", {
+                "name": name, "samples": len(metadata),
+                "primary_reference": references[best], "quality_score": quality[best]["score"],
+            })
             return profile
         finally:
             if staging.exists():

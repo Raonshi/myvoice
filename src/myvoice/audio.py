@@ -205,7 +205,8 @@ class AudioPreprocessor:
                     "-i", str(source), "-map_metadata", "-1", "-ac", "1", "-ar", str(self.sample_rate),
                     "-af", (
                         "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,"
-                        "areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse"
+                        "areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse,"
+                        "loudnorm=I=-20:LRA=7:TP=-2"
                     ),
                     "-c:a", "pcm_s16le", str(destination),
                 ],
@@ -231,6 +232,49 @@ class AudioPreprocessor:
                 writer.writeframes(frames)
         except wave.Error as exc:
             raise AudioToolError(f"Could not preprocess {source.name}: {exc}") from exc
+
+
+class ReferenceQualityScorer:
+    """Rank valid prompts without rejecting recordings solely for their length.
+
+    Chatterbox consumes a limited prompt window, so the score favors a clean,
+    continuous 6–10 second utterance. It deliberately uses only deterministic
+    signal measurements and never applies denoising or voice-changing effects.
+    """
+
+    def score(self, metadata: AudioMetadata) -> tuple[float, list[str]]:
+        duration = metadata.duration_seconds
+        if duration < 6:
+            duration_score = 45.0 * max(0.0, duration / 6.0)
+        elif duration <= 10:
+            duration_score = 45.0
+        else:
+            duration_score = max(30.0, 45.0 - min(15.0, (duration - 10.0) * 1.5))
+
+        silence = metadata.silence_ratio if metadata.silence_ratio is not None else 0.0
+        silence_score = 30.0 * max(0.0, 1.0 - min(1.0, silence) / 0.5)
+
+        peak = metadata.peak_dbfs
+        if peak is None:
+            level_score = 12.5
+        elif -12.0 <= peak <= -1.0:
+            level_score = 25.0
+        elif peak > -1.0:
+            level_score = max(0.0, 25.0 - (peak + 1.0) * 20.0)
+        else:
+            level_score = max(0.0, 25.0 - (-12.0 - peak) * 1.25)
+
+        reasons: list[str] = []
+        reasons.append("권장 길이(6~10초)" if 6 <= duration <= 10 else f"길이 {duration:.1f}초")
+        if silence <= 0.1:
+            reasons.append("무음이 적음")
+        elif silence >= 0.3:
+            reasons.append("무음 비율이 높음")
+        if peak is not None and -12 <= peak <= -1:
+            reasons.append("안정적인 음량")
+        elif peak is not None and peak > -1:
+            reasons.append("클리핑 위험")
+        return round(duration_score + silence_score + level_score, 2), reasons
 
 
 def write_silence(path: Path, milliseconds: int, sample_rate: int = 24000) -> None:
