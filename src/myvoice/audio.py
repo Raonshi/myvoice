@@ -142,7 +142,12 @@ class AudioProbe:
 
 
 class AudioValidator:
-    def __init__(self, probe: AudioProbe | None = None, minimum_files: int = 5, minimum_seconds: float = 10.0):
+    def __init__(
+        self,
+        probe: AudioProbe | None = None,
+        minimum_files: int | None = None,
+        minimum_seconds: float | None = None,
+    ):
         self.probe = probe or AudioProbe()
         self.minimum_files = minimum_files
         self.minimum_seconds = minimum_seconds
@@ -156,14 +161,16 @@ class AudioValidator:
     def validate(self, files: Iterable[Path]) -> tuple[list[AudioMetadata], list[ValidationIssue]]:
         file_list = list(files)
         issues: list[ValidationIssue] = []
-        if len(file_list) < self.minimum_files:
+        if not file_list:
+            issues.append(ValidationIssue("fail", "audio.no_files", "At least one supported audio file is required"))
+        elif self.minimum_files is not None and len(file_list) < self.minimum_files:
             issues.append(ValidationIssue("fail", "audio.minimum_files", f"At least {self.minimum_files} audio files are required; found {len(file_list)}"))
         metadata: list[AudioMetadata] = []
         for path in file_list:
             try:
                 item = self.probe.probe(path)
                 metadata.append(item)
-                if item.duration_seconds + 1e-6 < self.minimum_seconds:
+                if self.minimum_seconds is not None and item.duration_seconds + 1e-6 < self.minimum_seconds:
                     issues.append(ValidationIssue("fail", "audio.minimum_duration", f"Audio must be at least {self.minimum_seconds:.1f}s; found {item.duration_seconds:.2f}s", str(path)))
                 if item.peak_dbfs is not None and item.peak_dbfs > -0.1:
                     issues.append(ValidationIssue("warning", "audio.possible_clipping", f"Peak level is {item.peak_dbfs:.2f} dBFS", str(path)))

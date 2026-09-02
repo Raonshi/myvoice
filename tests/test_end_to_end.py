@@ -20,18 +20,18 @@ class FakeAACEncoder:
 def test_enroll_generate_resume_and_regenerate(tmp_path: Path) -> None:
     samples = tmp_path / "samples"
     samples.mkdir()
-    for index in range(5):
+    for index in range(1):
         generate_test_tone(samples / f"voice-{index}.wav", duration=0.12 + index * 0.01)
 
     voices = VoiceProfileRepository(tmp_path / "data" / "voices")
     jobs = JobRepository(tmp_path / "data" / "jobs")
     enrollment = EnrollmentService(
         voices,
-        validator=AudioValidator(minimum_seconds=0.1),
+        validator=AudioValidator(),
         preprocessor=AudioPreprocessor(sample_rate=24000),
     )
     profile = enrollment.enroll(samples, "youtube", consent_confirmed=True)
-    assert profile.sample_count == 5
+    assert profile.sample_count == 1
     assert (voices.root / "youtube" / profile.primary_reference).is_file()
 
     script = tmp_path / "script.md"

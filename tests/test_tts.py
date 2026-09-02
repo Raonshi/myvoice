@@ -9,7 +9,13 @@ import pytest
 
 from myvoice.errors import DeviceMemoryError, TTSError
 from myvoice.models import SynthesisRequest
-from myvoice.tts import ChatterboxEngine, inspect_mps_runtime, resolve_torch_device
+from myvoice.tts import (
+    SAMPLING_BAR_FORMAT,
+    ChatterboxEngine,
+    inspect_mps_runtime,
+    resolve_torch_device,
+    sampling_progress_without_percentage,
+)
 
 
 class FakeMPSBackend:
@@ -137,6 +143,22 @@ def test_auto_device_prefers_mps_only_for_native_apple_silicon() -> None:
 def test_explicit_mps_does_not_silently_fall_back() -> None:
     with pytest.raises(TTSError, match="myvoice doctor"):
         resolve_torch_device("mps", FakeTorch(available=False))
+
+
+def test_sampling_progress_format_omits_percentage() -> None:
+    captured: list[dict] = []
+
+    def fake_tqdm(*_args, **kwargs):
+        captured.append(kwargs)
+        return object()
+
+    wrapped = sampling_progress_without_percentage(fake_tqdm)
+    wrapped(range(3), desc="Sampling", bar_format="{percentage}%")
+    wrapped(range(3), desc="Other")
+
+    assert captured[0]["bar_format"] == SAMPLING_BAR_FORMAT
+    assert "percentage" not in captured[0]["bar_format"]
+    assert "bar_format" not in captured[1]
 
 
 def test_conditionals_are_reused_for_same_reference(tmp_path: Path, monkeypatch) -> None:

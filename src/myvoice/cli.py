@@ -90,7 +90,7 @@ def enroll(
     consent: Annotated[bool, typer.Option("--i-have-rights", help="Confirm this is your voice or you have explicit permission")] = False,
     replace: Annotated[bool, typer.Option("--replace")] = False,
 ) -> None:
-    """Validate and enroll at least five 10-second voice samples."""
+    """Validate and enroll reference audio for a reusable voice profile."""
     try:
         _, voices, _, _ = dependencies()
         profile = EnrollmentService(voices).enroll(

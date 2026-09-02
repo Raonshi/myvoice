@@ -6,6 +6,7 @@ import inspect
 import os
 import platform
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Protocol
 
@@ -17,6 +18,8 @@ from .models import SynthesisRequest
 # Chatterbox imports PyTorch lazily. Set the supported-operation fallback before
 # that import so an otherwise unsupported MPS operation can run on the CPU.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+SAMPLING_BAR_FORMAT = "{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,27 @@ def resolve_torch_device(
     return "cpu"
 
 
+def sampling_progress_without_percentage(tqdm_factory):
+    """Wrap tqdm so Chatterbox Sampling shows counts and rate without a percent."""
+    @wraps(tqdm_factory)
+    def wrapped(*args, **kwargs):
+        if kwargs.get("desc") == "Sampling":
+            kwargs["bar_format"] = SAMPLING_BAR_FORMAT
+        return tqdm_factory(*args, **kwargs)
+
+    wrapped.__myvoice_sampling_progress__ = True
+    return wrapped
+
+
+def configure_chatterbox_sampling_progress() -> None:
+    """Install the display-only wrapper on the pinned Chatterbox T3 module once."""
+    import chatterbox.models.t3.t3 as t3_module
+
+    current = t3_module.tqdm
+    if not getattr(current, "__myvoice_sampling_progress__", False):
+        t3_module.tqdm = sampling_progress_without_percentage(current)
+
+
 class TTSEngine(Protocol):
     name: str
     model_name: str
@@ -120,6 +144,7 @@ class ChatterboxEngine:
                         "The installed Chatterbox build does not expose Multilingual V3. "
                         "Install the pinned Git revision with `uv sync --extra tts`."
                     )
+                configure_chatterbox_sampling_progress()
                 model = ChatterboxMultilingualTTS.from_pretrained(device=resolved, t3_model="v3")
                 self._model = model
                 self._device = resolved

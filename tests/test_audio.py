@@ -21,13 +21,21 @@ def test_wave_probe_and_minimum_duration(tmp_path: Path) -> None:
     assert AudioProbe().probe(paths[0]).sample_rate == 24000
 
 
-def test_minimum_file_count_fails(tmp_path: Path) -> None:
-    path = tmp_path / "one.wav"
-    generate_test_tone(path, duration=0.2)
-    validator = AudioValidator(minimum_seconds=0.1)
-    _, issues = validator.validate([path])
+def test_empty_audio_list_fails() -> None:
+    validator = AudioValidator()
+    _, issues = validator.validate([])
     with pytest.raises(InputValidationError):
         validator.raise_for_failures(issues)
+
+
+def test_default_validator_accepts_one_short_audio_file(tmp_path: Path) -> None:
+    path = tmp_path / "one.wav"
+    generate_test_tone(path, duration=0.08)
+
+    metadata, issues = AudioValidator().validate([path])
+
+    assert len(metadata) == 1
+    assert not [item for item in issues if item.severity == "fail"]
 
 
 def test_assembler_adds_pause(tmp_path: Path) -> None:
