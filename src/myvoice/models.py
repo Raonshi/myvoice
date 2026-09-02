@@ -56,6 +56,31 @@ class VoiceProfile:
         return cls(**data)
 
 
+@dataclass(frozen=True)
+class PronunciationEntry:
+    source: str
+    pronunciation: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PronunciationDictionaryRecord:
+    id: str
+    name: str
+    language: str
+    entries: list[PronunciationEntry]
+    created_at: str
+    updated_at: str
+    schema_version: int = 1
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["entries"] = [entry.to_dict() for entry in self.entries]
+        return data
+
+
 @dataclass
 class DocumentBlock:
     id: str

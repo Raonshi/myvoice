@@ -4,9 +4,9 @@ import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
-from .audio import AACEncoder, AudioAssembler, AudioPreprocessor, AudioProbe, AudioValidator, ReferenceQualityScorer
+from .audio import AACEncoder, AudioAssembler, AudioPreprocessor, AudioProbe, AudioValidator, ReferenceQualityScorer, SUPPORTED_EXTENSIONS
 from .errors import InputValidationError, JobStateError, TTSError
 from .models import GenerationJob, SynthesisRequest, VoiceProfile, utc_now
 from .storage import JobRepository, VoiceProfileRepository
@@ -46,11 +46,35 @@ class EnrollmentService:
         replace: bool = False,
         progress: ProgressCallback = _noop_progress,
     ) -> VoiceProfile:
+        files = self.validator.discover(samples_dir)
+        return self.enroll_files(
+            files, name=name, language=language, engine_name=engine_name,
+            consent_confirmed=consent_confirmed, replace=replace, progress=progress,
+        )
+
+    def enroll_files(
+        self,
+        sample_files: Iterable[Path],
+        name: str,
+        language: str = "ko",
+        engine_name: str = "chatterbox_multilingual",
+        consent_confirmed: bool = False,
+        replace: bool = False,
+        progress: ProgressCallback = _noop_progress,
+    ) -> VoiceProfile:
         if not name or any(part in name for part in ("/", "\\", "..")):
             raise InputValidationError("Voice profile name must be a simple name without path separators")
         if not consent_confirmed:
             raise InputValidationError("Voice ownership/authorization consent must be confirmed")
-        files = self.validator.discover(samples_dir)
+        files: list[Path] = []
+        seen: set[Path] = set()
+        for sample in sample_files:
+            path = sample.expanduser().resolve()
+            if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                raise InputValidationError(f"Unsupported audio format: {path.name}")
+            if path not in seen:
+                seen.add(path)
+                files.append(path)
         metadata, issues = self.validator.validate(files)
         for issue in issues:
             progress("validation.issue", {"severity": issue.severity, "message": issue.message, "path": issue.path})
@@ -146,6 +170,8 @@ class GenerationService:
         max_chars: int = 180,
         keep_master_wav: bool = True,
         engine_override: str | None = None,
+        pronunciation_dictionary_id: str | None = None,
+        pronunciation_dictionary_name: str | None = None,
     ) -> GenerationJob:
         profile = self.voices.get(voice_name)
         document = ScriptParser().parse(script)
@@ -154,6 +180,10 @@ class GenerationService:
         job_id = f"job-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         engine_name = engine_override or profile.engine
         now = utc_now()
+        settings: dict[str, object] = {"max_chars": max_chars, "bitrate": "192k", "seed": None}
+        if pronunciation_dictionary_id:
+            settings["pronunciation_dictionary_id"] = pronunciation_dictionary_id
+            settings["pronunciation_dictionary_name"] = pronunciation_dictionary_name
         job = GenerationJob(
             id=job_id, status="segmented", created_at=now, updated_at=now,
             script_path=str(script.expanduser().resolve()), script_hash=document.source_hash,
@@ -161,7 +191,7 @@ class GenerationService:
             engine_model=profile.engine_model, language=profile.language, device=device,
             output_path=str(output.expanduser().resolve()), keep_master_wav=keep_master_wav,
             segments=segments,
-            settings={"max_chars": max_chars, "bitrate": "192k", "seed": None},
+            settings=settings,
         )
         job_dir = self.jobs.save(job)
         shutil.copy2(script.expanduser().resolve(), job_dir / f"script.original{script.suffix.lower()}")

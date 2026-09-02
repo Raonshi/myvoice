@@ -50,10 +50,49 @@ struct AppSnapshot: Codable, Sendable {
     let dataDir: String
     let voices: [VoiceProfile]
     let jobs: [GenerationJob]
+    let pronunciationDictionaries: [PronunciationDictionaryRecord]
 
     enum CodingKeys: String, CodingKey {
         case version, voices, jobs
         case dataDir = "data_dir"
+        case pronunciationDictionaries = "pronunciation_dictionaries"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(String.self, forKey: .version)
+        dataDir = try container.decode(String.self, forKey: .dataDir)
+        voices = try container.decode([VoiceProfile].self, forKey: .voices)
+        jobs = try container.decode([GenerationJob].self, forKey: .jobs)
+        pronunciationDictionaries = try container.decodeIfPresent(
+            [PronunciationDictionaryRecord].self,
+            forKey: .pronunciationDictionaries
+        ) ?? []
+    }
+}
+
+struct PronunciationEntry: Codable, Identifiable, Hashable, Sendable {
+    var id = UUID()
+    var source: String
+    var pronunciation: String
+
+    enum CodingKeys: String, CodingKey {
+        case source, pronunciation
+    }
+}
+
+struct PronunciationDictionaryRecord: Codable, Identifiable, Hashable, Sendable {
+    let id: String
+    var name: String
+    var language: String
+    var entries: [PronunciationEntry]
+    let createdAt: String
+    let updatedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, language, entries
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
     }
 }
 
@@ -136,11 +175,13 @@ struct DoctorCheck: Codable, Identifiable, Sendable {
 }
 
 struct DeletedVoice: Codable, Sendable { let deleted: String }
+struct DeletedPronunciationDictionary: Codable, Sendable { let deleted: String }
 
 enum SidebarItem: String, CaseIterable, Identifiable {
     case overview = "개요"
     case generate = "음성 생성"
     case enroll = "음성 등록"
+    case pronunciationDictionaries = "발음 사전"
     case voices = "Voice Profiles"
     case jobs = "생성 작업"
     case doctor = "시스템 진단"
@@ -151,6 +192,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .overview: "square.grid.2x2"
         case .generate: "waveform"
         case .enroll: "mic.badge.plus"
+        case .pronunciationDictionaries: "character.book.closed"
         case .voices: "person.wave.2"
         case .jobs: "clock.arrow.circlepath"
         case .doctor: "stethoscope"

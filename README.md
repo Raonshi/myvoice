@@ -1,6 +1,6 @@
 # MyVoice
 
-현재 버전은 2.0.0입니다.
+현재 버전은 2.1.0입니다.
 
 MyVoice는 사용자 본인의 음성 샘플을 재사용 가능한 Voice Profile로 등록하고, TXT/Markdown 대본을 세그먼트별로 합성해 AAC-LC 내레이션으로 만드는 로컬 우선 macOS 데스크톱/CLI 프로젝트입니다.
 
@@ -11,13 +11,13 @@ MyVoice는 사용자 본인의 음성 샘플을 재사용 가능한 Voice Profil
 - 길이·무음 비율·레벨을 종합한 reference 품질 점수와 최적 primary 자동 선택
 - Voice Profile과 원본 해시·동의 정보 저장
 - TXT 및 Markdown AST 파싱
-- YAML 발음 사전과 결정론적 텍스트 정규화
+- GUI에서 등록·편집·가져오기 가능한 YAML 발음 사전과 결정론적 텍스트 정규화
 - 길이·문단·문장 기반 segmentation
 - Chatterbox Multilingual V3 지연 로딩 adapter
 - 세그먼트 WAV 캐시, 중단 후 resume, 선택 segment regenerate
 - master WAV 병합 및 FFmpeg AAC-LC mono 192 kbps 인코딩
 - Typer/Rich CLI와 Bash/Zsh에서 동작하는 기본 대화형 터미널 메뉴
-- 등록·생성·Voice 관리·Job 재개/세그먼트 재생성·환경 진단을 제공하는 네이티브 macOS SwiftUI 앱
+- 오디오 파일 다중 등록·생성·발음 사전 관리·Voice 관리·Job 재개/세그먼트 재생성·환경 진단을 제공하는 네이티브 macOS SwiftUI 앱
 - 모델 다운로드가 필요 없는 test-tone 기반 통합 테스트
 
 ## 요구 환경
@@ -91,8 +91,9 @@ Chatterbox Multilingual은 화자 조건에 앞부분 최대 약 6초, 생성 �
 
 생성된 앱은 `dist/MyVoiceDesktop.app`에 있습니다. 앱의 사이드바에서 다음 기능을 모두 사용할 수 있습니다.
 
-- 음성 샘플 폴더 분석과 Voice Profile 등록·교체
-- TXT/Markdown 대본, Voice Profile, 출력 AAC, 처리 장치, 발음 사전 선택 후 생성 또는 dry run
+- WAV, FLAC, AAC, M4A, MP3, OGG 음성 파일 다중 선택과 Voice Profile 등록·교체
+- 발음 사전 직접 편집, YAML 가져오기, 저장·삭제
+- TXT/Markdown 대본, Voice Profile, 출력 AAC, 처리 장치, 등록 또는 외부 발음 사전 선택 후 생성 또는 dry run
 - Voice Profile 상세 확인과 삭제
 - 생성 Job 및 세그먼트 상태 확인, 실패한 Job 재개, 텍스트 수정 후 개별 세그먼트 재생성
 - Python, FFmpeg, Chatterbox, PyTorch와 Apple Silicon MPS 진단
@@ -143,7 +144,7 @@ uv run myvoice regenerate <job-id> seg-0023
 uv run myvoice regenerate <job-id> seg-0023 --text "수정한 낭독 문장입니다."
 ```
 
-기존 CLI 인터페이스는 2.0.0에서도 그대로 유지됩니다. 인자 없이 실행하면 현재 Bash/Zsh 터미널 안에서 숫자로 조작하는 메뉴가 열립니다.
+기존 CLI 인터페이스는 2.1.0에서도 그대로 유지됩니다. 인자 없이 실행하면 현재 Bash/Zsh 터미널 안에서 숫자로 조작하는 메뉴가 열립니다.
 
 ```bash
 uv run myvoice
@@ -164,7 +165,9 @@ Enroll 완료 후에는 바로 Generate 단계로 이동할지 묻습니다. Gen
 
 ## 발음 사전
 
-`examples/pronunciation.yaml` 형식을 복사해 사용합니다.
+macOS 앱의 사이드바에서 **발음 사전**을 열면 원문과 읽을 발음을 직접 편집하거나 기존 YAML을 가져와 영구 저장할 수 있습니다. 저장된 사전은 음성 생성 때마다 목록에서 하나를 선택합니다. 외부 YAML을 한 번만 선택하는 기존 흐름도 유지됩니다.
+
+CLI에서는 `examples/pronunciation.yaml` 형식을 복사해 사용합니다.
 
 ```bash
 uv run myvoice speak script.md \
@@ -183,7 +186,7 @@ uv run myvoice speak script.md \
 export MYVOICE_DATA_DIR="$PWD/work/myvoice-data"
 ```
 
-Voice Profile에는 전처리된 reference 음성과 원본 해시가 들어갑니다. 이 폴더는 생체정보에 준하는 민감한 데이터로 취급해야 합니다.
+Voice Profile에는 전처리된 reference 음성과 원본 해시가 들어가며, GUI에서 저장한 발음 사전은 `pronunciation_dictionaries` 하위 폴더에 YAML로 보관됩니다. 이 데이터 폴더는 생체정보에 준하는 민감한 데이터로 취급해야 합니다.
 
 ## 개발 및 테스트
 

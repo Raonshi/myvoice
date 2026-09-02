@@ -17,6 +17,10 @@ class VoiceProfileError(MyVoiceError):
     exit_code = 11
 
 
+class PronunciationDictionaryError(MyVoiceError):
+    exit_code = 12
+
+
 class TTSError(MyVoiceError):
     exit_code = 20
 

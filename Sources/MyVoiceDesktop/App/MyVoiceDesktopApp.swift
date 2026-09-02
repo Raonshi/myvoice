@@ -24,6 +24,8 @@ struct MyVoiceDesktopApp: App {
                 Divider()
                 Button("음성 생성") { store.selection = .generate }.keyboardShortcut("g")
                 Button("음성 등록") { store.selection = .enroll }.keyboardShortcut("e")
+                Button("발음 사전") { store.selection = .pronunciationDictionaries }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
                 Button("시스템 진단") { store.selection = .doctor }.keyboardShortcut("d", modifiers: [.command, .shift])
             }
         }

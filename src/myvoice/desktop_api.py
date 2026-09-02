@@ -13,18 +13,25 @@ from typing import Any, TextIO
 from . import __version__
 from .audio import executable
 from .config import AppPaths
-from .errors import MyVoiceError
+from .errors import InputValidationError, MyVoiceError
 from .services import EnrollmentService, GenerationService
-from .storage import JobRepository, VoiceProfileRepository
+from .storage import JobRepository, PronunciationDictionaryRepository, VoiceProfileRepository
 from .tts import inspect_mps_runtime, resolve_torch_device
 
 
-def _dependencies() -> tuple[AppPaths, VoiceProfileRepository, JobRepository, GenerationService]:
+def _dependencies() -> tuple[
+    AppPaths,
+    VoiceProfileRepository,
+    JobRepository,
+    PronunciationDictionaryRepository,
+    GenerationService,
+]:
     paths = AppPaths.discover()
     paths.ensure()
     voices = VoiceProfileRepository(paths.voices_dir)
     jobs = JobRepository(paths.jobs_dir)
-    return paths, voices, jobs, GenerationService(voices, jobs)
+    dictionaries = PronunciationDictionaryRepository(paths.pronunciation_dictionaries_dir)
+    return paths, voices, jobs, dictionaries, GenerationService(voices, jobs)
 
 
 def diagnostic_snapshot(paths: AppPaths) -> dict[str, Any]:
@@ -79,35 +86,67 @@ class DesktopAPI:
     def execute(self, request: dict[str, Any]) -> dict[str, Any]:
         operation = request.get("operation")
         payload = request.get("payload") or {}
-        paths, voices, jobs, service = _dependencies()
+        paths, voices, jobs, dictionaries, service = _dependencies()
         if operation == "snapshot":
             return {
                 "version": __version__, "data_dir": str(paths.data_dir),
                 "voices": [item.to_dict() for item in voices.list()],
                 "jobs": [item.to_dict() for item in jobs.list()],
+                "pronunciation_dictionaries": [item.to_dict() for item in dictionaries.list()],
             }
         if operation == "doctor":
             return diagnostic_snapshot(paths)
         if operation == "enroll":
-            profile = EnrollmentService(voices).enroll(
-                Path(payload["samples_dir"]), name=payload["name"],
-                language=payload.get("language", "ko"),
-                engine_name=payload.get("engine", "chatterbox_multilingual"),
-                consent_confirmed=bool(payload.get("consent_confirmed")),
-                replace=bool(payload.get("replace")), progress=self.progress,
-            )
+            enrollment = EnrollmentService(voices)
+            options = {
+                "name": payload["name"],
+                "language": payload.get("language", "ko"),
+                "engine_name": payload.get("engine", "chatterbox_multilingual"),
+                "consent_confirmed": bool(payload.get("consent_confirmed")),
+                "replace": bool(payload.get("replace")),
+                "progress": self.progress,
+            }
+            if "sample_files" in payload:
+                sample_files = payload["sample_files"]
+                if not isinstance(sample_files, list) or not all(isinstance(item, str) for item in sample_files):
+                    raise InputValidationError("sample_files must be an array of file paths")
+                profile = enrollment.enroll_files([Path(item) for item in sample_files], **options)
+            else:
+                profile = enrollment.enroll(Path(payload["samples_dir"]), **options)
             return profile.to_dict()
         if operation == "speak":
             pronunciation = payload.get("pronunciation_dict")
+            dictionary_id = payload.get("pronunciation_dictionary_id")
+            if pronunciation and dictionary_id:
+                raise InputValidationError("Choose either a registered pronunciation dictionary or an external YAML file")
+            dictionary_record = dictionaries.get(dictionary_id) if dictionary_id else None
             job = service.create_job(
                 Path(payload["script"]), payload["voice"], Path(payload["output"]),
                 device=payload.get("device", "auto"),
-                pronunciation_dict=Path(pronunciation) if pronunciation else None,
+                pronunciation_dict=dictionaries.path(dictionary_id) if dictionary_id else Path(pronunciation) if pronunciation else None,
                 max_chars=int(payload.get("max_chars", 180)),
                 keep_master_wav=bool(payload.get("keep_master_wav", True)),
                 engine_override=payload.get("engine"),
+                pronunciation_dictionary_id=dictionary_record.id if dictionary_record else None,
+                pronunciation_dictionary_name=dictionary_record.name if dictionary_record else None,
             )
             return service.generate(job, progress=self.progress, dry_run=bool(payload.get("dry_run"))).to_dict()
+        if operation == "save_pronunciation_dictionary":
+            entries = payload.get("entries")
+            if not isinstance(entries, list) or not all(isinstance(item, dict) for item in entries):
+                raise InputValidationError("entries must be an array")
+            return dictionaries.save(
+                dictionary_id=payload.get("id"),
+                name=payload.get("name", ""),
+                language=payload.get("language", ""),
+                entries=entries,
+            ).to_dict()
+        if operation == "delete_pronunciation_dictionary":
+            dictionary_id = payload["id"]
+            dictionaries.delete(dictionary_id)
+            return {"deleted": dictionary_id}
+        if operation == "load_pronunciation_dictionary_file":
+            return dictionaries.load_external(Path(payload["path"])).to_dict()
         if operation == "resume":
             return service.resume(payload["job_id"], progress=self.progress).to_dict()
         if operation == "regenerate":

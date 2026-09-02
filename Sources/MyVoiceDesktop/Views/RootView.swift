@@ -16,6 +16,7 @@ struct RootView: View {
                 case .overview: OverviewView()
                 case .generate: GenerateView()
                 case .enroll: EnrollView()
+                case .pronunciationDictionaries: PronunciationDictionariesView()
                 case .voices: VoicesView()
                 case .jobs: JobsView()
                 case .doctor: DoctorView()

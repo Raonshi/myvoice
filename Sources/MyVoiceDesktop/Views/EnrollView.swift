@@ -2,7 +2,7 @@ import SwiftUI
 
 struct EnrollView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var directory = ""
+    @State private var files: [String] = []
     @State private var name = ""
     @State private var language = "ko"
     @State private var hasRights = false
@@ -11,12 +11,41 @@ struct EnrollView: View {
     var body: some View {
         Form {
             Section("Voice Profile") {
-                LabeledContent("샘플 폴더") {
+                LabeledContent("음성 샘플") {
                     HStack {
-                        Text(directory.isEmpty ? "선택되지 않음" : directory).lineLimit(1).foregroundStyle(.secondary)
-                        Button("선택…") { directory = FilePanels.chooseDirectory() ?? directory }
+                        Text(files.isEmpty ? "선택되지 않음" : "\(files.count)개 파일")
+                            .foregroundStyle(.secondary)
+                        Button(files.isEmpty ? "파일 선택…" : "다시 선택…") {
+                            files = FilePanels.chooseFiles(
+                                types: ["wav", "wave", "flac", "aac", "m4a", "mp3", "ogg"]
+                            ) ?? files
+                        }
                     }
                 }
+                if !files.isEmpty {
+                    List {
+                        ForEach(files, id: \.self) { path in
+                            HStack {
+                                Image(systemName: "waveform")
+                                    .foregroundStyle(.secondary)
+                                Text(URL(fileURLWithPath: path).lastPathComponent)
+                                    .lineLimit(1)
+                                Spacer()
+                                Button {
+                                    files.removeAll { $0 == path }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .help("목록에서 제거")
+                            }
+                        }
+                    }
+                    .frame(minHeight: 90, maxHeight: 150)
+                }
+                Text("지원 형식: WAV, FLAC, AAC, M4A, MP3, OGG")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextField("이름", text: $name, prompt: Text("예: narration-ko"))
                 Picker("언어", selection: $language) {
                     Text("한국어").tag("ko")
@@ -38,10 +67,10 @@ struct EnrollView: View {
             }
             Section {
                 Button {
-                    Task { await store.enroll(directory: directory, name: name, language: language, replace: replace) }
+                    Task { await store.enroll(files: files, name: name, language: language, replace: replace) }
                 } label: { Label("분석하고 등록", systemImage: "mic.badge.plus") }
                 .buttonStyle(.borderedProminent)
-                .disabled(directory.isEmpty || name.trimmingCharacters(in: .whitespaces).isEmpty || !hasRights || store.isWorking)
+                .disabled(files.isEmpty || name.trimmingCharacters(in: .whitespaces).isEmpty || !hasRights || store.isWorking)
             }
         }.formStyle(.grouped).navigationTitle("음성 등록")
     }

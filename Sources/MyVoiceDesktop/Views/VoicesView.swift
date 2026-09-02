@@ -29,7 +29,7 @@ struct VoicesView: View {
                             LabeledContent("Primary", value: voice.primaryReference)
                             LabeledContent("샘플", value: voice.sampleCount.formatted())
                             LabeledContent("전체 길이", value: String(format: "%.1f초", voice.totalDurationSeconds))
-                            Text("2.0.0 등록 과정은 가장 긴 파일이 아니라, 전처리 후 길이·무음·레벨 품질을 종합해 Primary reference를 선택합니다.")
+                            Text("등록 과정은 가장 긴 파일이 아니라, 전처리 후 길이·무음·레벨 품질을 종합해 Primary reference를 선택합니다.")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         Section {

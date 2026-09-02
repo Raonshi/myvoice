@@ -6,6 +6,7 @@ struct GenerateView: View {
     @State private var script = ""
     @State private var output = ""
     @State private var dictionary = ""
+    @State private var dictionaryID = ""
     @State private var voice = ""
     @State private var maxChars = 180.0
     @State private var keepMaster = true
@@ -19,7 +20,21 @@ struct GenerateView: View {
                     Text("선택하세요").tag("")
                     ForEach(store.voices) { Text($0.name).tag($0.name) }
                 }
-                fileRow("발음 사전 (선택)", value: dictionary) { dictionary = FilePanels.chooseFile(types: ["yaml", "yml"]) ?? dictionary }
+                Picker("등록된 발음 사전", selection: $dictionaryID) {
+                    Text("없음").tag("")
+                    ForEach(store.pronunciationDictionaries) { item in
+                        Text("\(item.name) · \(item.entries.count)개").tag(item.id)
+                    }
+                }
+                .onChange(of: dictionaryID) { _, newValue in
+                    if !newValue.isEmpty { dictionary = "" }
+                }
+                fileRow("외부 YAML (선택)", value: dictionary) {
+                    if let selected = FilePanels.chooseFile(types: ["yaml", "yml"]) {
+                        dictionary = selected
+                        dictionaryID = ""
+                    }
+                }
             }
             Section("출력") {
                 fileRow("AAC 파일", value: output) { output = FilePanels.saveAAC() ?? output }
@@ -41,7 +56,8 @@ struct GenerateView: View {
                 Button {
                     Task {
                         await store.speak(script: script, voice: voice, output: output, device: device,
-                                          dictionary: dictionary, maxChars: Int(maxChars),
+                                          dictionary: dictionary, dictionaryID: dictionaryID,
+                                          maxChars: Int(maxChars),
                                           keepMaster: keepMaster, dryRun: dryRun)
                     }
                 } label: { Label(dryRun ? "대본 분석" : "음성 생성", systemImage: dryRun ? "text.magnifyingglass" : "waveform") }
