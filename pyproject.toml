@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "myvoice-cli"
+version = "0.1.0"
+description = "Local-first voice-cloning TTS CLI/TUI pipeline"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "MyVoice Contributors" }]
+dependencies = [
+  "markdown-it-py>=3.0,<5",
+  "platformdirs>=4.3,<5",
+  "PyYAML>=6.0,<7",
+  "rich>=13.9,<15",
+  "typer>=0.15,<1",
+]
+
+[project.optional-dependencies]
+tts = ["chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git@5de7a54aa4e5e2baadb0182dde554908b48b85c2"]
+dev = ["pytest>=8.3,<9", "pytest-cov>=6,<7"]
+
+[project.scripts]
+myvoice = "myvoice.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/myvoice"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["myvoice"]
+branch = true
