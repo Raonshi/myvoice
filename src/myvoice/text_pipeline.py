@@ -13,6 +13,29 @@ from .errors import InputValidationError
 from .models import DocumentBlock, SpeechDocument, SpeechSegment
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict:
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                f"duplicate key: {key}", key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
 def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -88,9 +111,11 @@ class PronunciationDictionary:
         if path is None:
             return cls()
         try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader) or {}
         except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise InputValidationError(f"Could not read pronunciation dictionary: {exc}") from exc
+        if not isinstance(data, dict):
+            raise InputValidationError("Pronunciation dictionary must be a YAML mapping")
         entries = data.get("entries", data)
         if not isinstance(entries, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in entries.items()):
             raise InputValidationError("Pronunciation dictionary entries must be string key/value pairs")
@@ -102,6 +127,28 @@ class PronunciationDictionary:
             result = result.replace(source, self.entries[source])
         return result
 
+
+def load_pronunciation_dictionary_file(path: Path) -> tuple[str, dict[str, str]]:
+    resolved = path.expanduser().resolve()
+    if resolved.suffix.lower() not in {".yaml", ".yml"}:
+        raise InputValidationError("Pronunciation dictionary must be a .yaml or .yml file")
+    try:
+        data = yaml.load(resolved.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader) or {}
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise InputValidationError(f"Could not read pronunciation dictionary: {exc}") from exc
+    if not isinstance(data, dict):
+        raise InputValidationError("Pronunciation dictionary must be a YAML mapping")
+    if "version" in data and data["version"] != 1:
+        raise InputValidationError("Unsupported pronunciation dictionary schema version")
+    language = data.get("language", "ko")
+    entries = data.get("entries", data)
+    if not isinstance(language, str) or not language.strip():
+        raise InputValidationError("Pronunciation dictionary language must be a non-empty string")
+    if not isinstance(entries, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in entries.items()):
+        raise InputValidationError("Pronunciation dictionary entries must be string key/value pairs")
+    if not entries:
+        raise InputValidationError("Pronunciation dictionary must contain at least one entry")
+    return language.strip(), entries
 
 class KoreanTextNormalizer:
     _spaces = re.compile(r"\s+")

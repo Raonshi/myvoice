@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 from myvoice.audio import AudioPreprocessor, AudioValidator, generate_test_tone
+from myvoice.models import AudioMetadata
 from myvoice.services import EnrollmentService, GenerationService
 from myvoice.storage import JobRepository, VoiceProfileRepository
 from myvoice.tts import TestToneEngine
@@ -20,18 +21,18 @@ class FakeAACEncoder:
 def test_enroll_generate_resume_and_regenerate(tmp_path: Path) -> None:
     samples = tmp_path / "samples"
     samples.mkdir()
-    for index in range(5):
+    for index in range(1):
         generate_test_tone(samples / f"voice-{index}.wav", duration=0.12 + index * 0.01)
 
     voices = VoiceProfileRepository(tmp_path / "data" / "voices")
     jobs = JobRepository(tmp_path / "data" / "jobs")
     enrollment = EnrollmentService(
         voices,
-        validator=AudioValidator(minimum_seconds=0.1),
+        validator=AudioValidator(),
         preprocessor=AudioPreprocessor(sample_rate=24000),
     )
     profile = enrollment.enroll(samples, "youtube", consent_confirmed=True)
-    assert profile.sample_count == 5
+    assert profile.sample_count == 1
     assert (voices.root / "youtube" / profile.primary_reference).is_file()
 
     script = tmp_path / "script.md"
@@ -56,3 +57,44 @@ def test_enroll_generate_resume_and_regenerate(tmp_path: Path) -> None:
     for segment in revised.segments:
         if segment.id != "seg-0002":
             assert segment.audio_path == before[segment.id]
+
+
+def test_enrollment_selects_best_quality_reference_not_longest(tmp_path: Path) -> None:
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    short = samples / "clean.wav"
+    long = samples / "long-noisy.wav"
+    short.touch()
+    long.touch()
+
+    class Validator:
+        def discover(self, _directory):
+            return [short, long]
+
+        def validate(self, _files):
+            return [
+                AudioMetadata(str(short), 8.0, 24000, 1, "pcm_s16le", -3, 0.02, "clean"),
+                AudioMetadata(str(long), 20.0, 24000, 1, "pcm_s16le", -0.01, 0.45, "noisy"),
+            ], []
+
+        def raise_for_failures(self, _issues):
+            return None
+
+    class Preprocessor:
+        def process(self, _source, destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.touch()
+
+    class Probe:
+        def probe(self, path):
+            if path.name == "001.wav":
+                return AudioMetadata(str(path), 8.0, 24000, 1, "pcm_s16le", -3, 0.02)
+            return AudioMetadata(str(path), 20.0, 24000, 1, "pcm_s16le", -0.01, 0.45)
+
+    voices = VoiceProfileRepository(tmp_path / "data" / "voices")
+    profile = EnrollmentService(
+        voices, validator=Validator(), preprocessor=Preprocessor(), probe=Probe()
+    ).enroll(samples, "quality", consent_confirmed=True)
+
+    assert profile.primary_reference == "references/001.wav"
+    assert profile.metadata["reference_quality"][0]["score"] > profile.metadata["reference_quality"][1]["score"]

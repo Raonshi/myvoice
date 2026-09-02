@@ -20,6 +20,11 @@ from .models import AudioMetadata, ValidationIssue
 
 
 SUPPORTED_EXTENSIONS = {".wav", ".wave", ".flac", ".aac", ".m4a", ".mp3", ".ogg"}
+FALLBACK_EXECUTABLE_DIRECTORIES = (
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+    Path("/usr/bin"),
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -31,7 +36,16 @@ def sha256_file(path: Path) -> str:
 
 
 def executable(name: str) -> str | None:
-    return shutil.which(name)
+    override = os.environ.get(f"MYVOICE_{name.upper()}")
+    candidates = [Path(override).expanduser()] if override else []
+    discovered = shutil.which(name)
+    if discovered:
+        candidates.append(Path(discovered))
+    candidates.extend(directory / name for directory in FALLBACK_EXECUTABLE_DIRECTORIES)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve())
+    return None
 
 
 def run_checked(args: list[str], *, error_context: str) -> subprocess.CompletedProcess[str]:
@@ -49,20 +63,22 @@ class AudioProbe:
         path = path.expanduser().resolve()
         if not path.is_file():
             raise InputValidationError(f"Audio file does not exist: {path}")
-        if executable("ffprobe"):
-            metadata = self._probe_ffmpeg(path)
-            if executable("ffmpeg"):
-                peak, silence_ratio = self._quality_ffmpeg(path, metadata.duration_seconds)
+        ffprobe = executable("ffprobe")
+        if ffprobe:
+            metadata = self._probe_ffmpeg(path, ffprobe)
+            ffmpeg = executable("ffmpeg")
+            if ffmpeg:
+                peak, silence_ratio = self._quality_ffmpeg(path, metadata.duration_seconds, ffmpeg)
                 metadata = replace(metadata, peak_dbfs=peak, silence_ratio=silence_ratio)
             return metadata
         if path.suffix.lower() in {".wav", ".wave"}:
             return self._probe_wave(path)
         raise AudioToolError("ffprobe is required for non-WAV audio files")
 
-    def _probe_ffmpeg(self, path: Path) -> AudioMetadata:
+    def _probe_ffmpeg(self, path: Path, ffprobe: str) -> AudioMetadata:
         result = run_checked(
             [
-                "ffprobe", "-v", "error", "-select_streams", "a:0",
+                ffprobe, "-v", "error", "-select_streams", "a:0",
                 "-show_entries", "stream=codec_name,sample_rate,channels:format=duration",
                 "-of", "json", str(path),
             ],
@@ -97,10 +113,10 @@ class AudioProbe:
             peak_dbfs=peak_dbfs, sha256=sha256_file(path),
         )
 
-    def _quality_ffmpeg(self, path: Path, duration: float) -> tuple[float | None, float | None]:
+    def _quality_ffmpeg(self, path: Path, duration: float, ffmpeg: str) -> tuple[float | None, float | None]:
         result = run_checked(
             [
-                "ffmpeg", "-nostdin", "-hide_banner", "-i", str(path),
+                ffmpeg, "-nostdin", "-hide_banner", "-i", str(path),
                 "-af", "silencedetect=noise=-45dB:d=0.35,volumedetect", "-f", "null", "-",
             ],
             error_context=f"Could not analyze {path.name}",
@@ -142,7 +158,12 @@ class AudioProbe:
 
 
 class AudioValidator:
-    def __init__(self, probe: AudioProbe | None = None, minimum_files: int = 5, minimum_seconds: float = 10.0):
+    def __init__(
+        self,
+        probe: AudioProbe | None = None,
+        minimum_files: int | None = None,
+        minimum_seconds: float | None = None,
+    ):
         self.probe = probe or AudioProbe()
         self.minimum_files = minimum_files
         self.minimum_seconds = minimum_seconds
@@ -156,14 +177,16 @@ class AudioValidator:
     def validate(self, files: Iterable[Path]) -> tuple[list[AudioMetadata], list[ValidationIssue]]:
         file_list = list(files)
         issues: list[ValidationIssue] = []
-        if len(file_list) < self.minimum_files:
+        if not file_list:
+            issues.append(ValidationIssue("fail", "audio.no_files", "At least one supported audio file is required"))
+        elif self.minimum_files is not None and len(file_list) < self.minimum_files:
             issues.append(ValidationIssue("fail", "audio.minimum_files", f"At least {self.minimum_files} audio files are required; found {len(file_list)}"))
         metadata: list[AudioMetadata] = []
         for path in file_list:
             try:
                 item = self.probe.probe(path)
                 metadata.append(item)
-                if item.duration_seconds + 1e-6 < self.minimum_seconds:
+                if self.minimum_seconds is not None and item.duration_seconds + 1e-6 < self.minimum_seconds:
                     issues.append(ValidationIssue("fail", "audio.minimum_duration", f"Audio must be at least {self.minimum_seconds:.1f}s; found {item.duration_seconds:.2f}s", str(path)))
                 if item.peak_dbfs is not None and item.peak_dbfs > -0.1:
                     issues.append(ValidationIssue("warning", "audio.possible_clipping", f"Peak level is {item.peak_dbfs:.2f} dBFS", str(path)))
@@ -191,14 +214,16 @@ class AudioPreprocessor:
 
     def process(self, source: Path, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if executable("ffmpeg"):
+        ffmpeg = executable("ffmpeg")
+        if ffmpeg:
             run_checked(
                 [
-                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                     "-i", str(source), "-map_metadata", "-1", "-ac", "1", "-ar", str(self.sample_rate),
                     "-af", (
                         "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,"
-                        "areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse"
+                        "areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse,"
+                        "loudnorm=I=-20:LRA=7:TP=-2"
                     ),
                     "-c:a", "pcm_s16le", str(destination),
                 ],
@@ -226,6 +251,49 @@ class AudioPreprocessor:
             raise AudioToolError(f"Could not preprocess {source.name}: {exc}") from exc
 
 
+class ReferenceQualityScorer:
+    """Rank valid prompts without rejecting recordings solely for their length.
+
+    Chatterbox consumes a limited prompt window, so the score favors a clean,
+    continuous 6–10 second utterance. It deliberately uses only deterministic
+    signal measurements and never applies denoising or voice-changing effects.
+    """
+
+    def score(self, metadata: AudioMetadata) -> tuple[float, list[str]]:
+        duration = metadata.duration_seconds
+        if duration < 6:
+            duration_score = 45.0 * max(0.0, duration / 6.0)
+        elif duration <= 10:
+            duration_score = 45.0
+        else:
+            duration_score = max(30.0, 45.0 - min(15.0, (duration - 10.0) * 1.5))
+
+        silence = metadata.silence_ratio if metadata.silence_ratio is not None else 0.0
+        silence_score = 30.0 * max(0.0, 1.0 - min(1.0, silence) / 0.5)
+
+        peak = metadata.peak_dbfs
+        if peak is None:
+            level_score = 12.5
+        elif -12.0 <= peak <= -1.0:
+            level_score = 25.0
+        elif peak > -1.0:
+            level_score = max(0.0, 25.0 - (peak + 1.0) * 20.0)
+        else:
+            level_score = max(0.0, 25.0 - (-12.0 - peak) * 1.25)
+
+        reasons: list[str] = []
+        reasons.append("권장 길이(6~10초)" if 6 <= duration <= 10 else f"길이 {duration:.1f}초")
+        if silence <= 0.1:
+            reasons.append("무음이 적음")
+        elif silence >= 0.3:
+            reasons.append("무음 비율이 높음")
+        if peak is not None and -12 <= peak <= -1:
+            reasons.append("안정적인 음량")
+        elif peak is not None and peak > -1:
+            reasons.append("클리핑 위험")
+        return round(duration_score + silence_score + level_score, 2), reasons
+
+
 def write_silence(path: Path, milliseconds: int, sample_rate: int = 24000) -> None:
     frames = max(0, round(sample_rate * milliseconds / 1000))
     with wave.open(str(path), "wb") as writer:
@@ -249,8 +317,9 @@ class AudioAssembler:
         os.close(fd)
         temporary = Path(temporary_name)
         try:
-            if executable("ffmpeg"):
-                self._concatenate_with_ffmpeg_normalization(segments, temporary)
+            ffmpeg = executable("ffmpeg")
+            if ffmpeg:
+                self._concatenate_with_ffmpeg_normalization(segments, temporary, ffmpeg)
             else:
                 self._concatenate_pcm_wave(segments, temporary)
             os.replace(temporary, destination)
@@ -259,7 +328,7 @@ class AudioAssembler:
         return destination
 
     def _concatenate_with_ffmpeg_normalization(
-        self, segments: list[tuple[Path, int]], destination: Path
+        self, segments: list[tuple[Path, int]], destination: Path, ffmpeg: str
     ) -> None:
         with tempfile.TemporaryDirectory(prefix="myvoice-assembly-", dir=destination.parent) as temp_dir:
             normalized: list[tuple[Path, int]] = []
@@ -267,7 +336,7 @@ class AudioAssembler:
                 target = Path(temp_dir) / f"{index:05d}.wav"
                 run_checked(
                     [
-                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                         "-i", str(source), "-map_metadata", "-1", "-ac", "1",
                         "-ar", str(self.sample_rate), "-c:a", "pcm_s16le", str(target),
                     ],
@@ -317,12 +386,13 @@ class AudioAssembler:
 
 class AACEncoder:
     def encode(self, source_wav: Path, destination: Path, bitrate: str = "192k") -> Path:
-        if not executable("ffmpeg"):
+        ffmpeg = executable("ffmpeg")
+        if not ffmpeg:
             raise AudioToolError("FFmpeg is required to encode AAC-LC output")
         destination.parent.mkdir(parents=True, exist_ok=True)
         run_checked(
             [
-                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source_wav),
+                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source_wav),
                 "-c:a", "aac", "-profile:a", "aac_low", "-b:a", bitrate, "-ac", "1", "-f", "adts", str(destination),
             ],
             error_context="AAC-LC encoding failed",

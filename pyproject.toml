@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "myvoice-cli"
-version = "1.0.0"
-description = "Local-first voice-cloning TTS CLI/TUI pipeline"
+version = "2.1.1"
+description = "Local-first voice-cloning TTS desktop and CLI pipeline"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "MIT" }

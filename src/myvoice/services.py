@@ -4,9 +4,9 @@ import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
-from .audio import AACEncoder, AudioAssembler, AudioPreprocessor, AudioProbe, AudioValidator
+from .audio import AACEncoder, AudioAssembler, AudioPreprocessor, AudioProbe, AudioValidator, ReferenceQualityScorer, SUPPORTED_EXTENSIONS
 from .errors import InputValidationError, JobStateError, TTSError
 from .models import GenerationJob, SynthesisRequest, VoiceProfile, utc_now
 from .storage import JobRepository, VoiceProfileRepository
@@ -22,10 +22,19 @@ def _noop_progress(event: str, payload: dict) -> None:
 
 
 class EnrollmentService:
-    def __init__(self, voices: VoiceProfileRepository, validator: AudioValidator | None = None, preprocessor: AudioPreprocessor | None = None):
+    def __init__(
+        self,
+        voices: VoiceProfileRepository,
+        validator: AudioValidator | None = None,
+        preprocessor: AudioPreprocessor | None = None,
+        probe: AudioProbe | None = None,
+        scorer: ReferenceQualityScorer | None = None,
+    ):
         self.voices = voices
         self.validator = validator or AudioValidator()
         self.preprocessor = preprocessor or AudioPreprocessor()
+        self.probe = probe or AudioProbe()
+        self.scorer = scorer or ReferenceQualityScorer()
 
     def enroll(
         self,
@@ -37,11 +46,35 @@ class EnrollmentService:
         replace: bool = False,
         progress: ProgressCallback = _noop_progress,
     ) -> VoiceProfile:
+        files = self.validator.discover(samples_dir)
+        return self.enroll_files(
+            files, name=name, language=language, engine_name=engine_name,
+            consent_confirmed=consent_confirmed, replace=replace, progress=progress,
+        )
+
+    def enroll_files(
+        self,
+        sample_files: Iterable[Path],
+        name: str,
+        language: str = "ko",
+        engine_name: str = "chatterbox_multilingual",
+        consent_confirmed: bool = False,
+        replace: bool = False,
+        progress: ProgressCallback = _noop_progress,
+    ) -> VoiceProfile:
         if not name or any(part in name for part in ("/", "\\", "..")):
             raise InputValidationError("Voice profile name must be a simple name without path separators")
         if not consent_confirmed:
             raise InputValidationError("Voice ownership/authorization consent must be confirmed")
-        files = self.validator.discover(samples_dir)
+        files: list[Path] = []
+        seen: set[Path] = set()
+        for sample in sample_files:
+            path = sample.expanduser().resolve()
+            if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                raise InputValidationError(f"Unsupported audio format: {path.name}")
+            if path not in seen:
+                seen.add(path)
+                files.append(path)
         metadata, issues = self.validator.validate(files)
         for issue in issues:
             progress("validation.issue", {"severity": issue.severity, "message": issue.message, "path": issue.path})
@@ -51,22 +84,36 @@ class EnrollmentService:
         references_dir = staging / "references"
         try:
             references: list[str] = []
+            quality: list[dict] = []
             for index, item in enumerate(metadata, 1):
                 destination = references_dir / f"{index:03d}.wav"
                 self.preprocessor.process(Path(item.path), destination)
                 references.append(str(Path("references") / destination.name))
-                progress("enroll.reference", {"completed": index, "total": len(metadata), "source": item.path})
-            longest = max(range(len(metadata)), key=lambda idx: metadata[idx].duration_seconds)
+                prepared = self.probe.probe(destination)
+                score, reasons = self.scorer.score(prepared)
+                quality.append({
+                    "reference": references[-1], "source": item.path, "score": score,
+                    "duration_seconds": prepared.duration_seconds,
+                    "peak_dbfs": prepared.peak_dbfs, "silence_ratio": prepared.silence_ratio,
+                    "reasons": reasons,
+                })
+                progress("enroll.reference", {
+                    "completed": index, "total": len(metadata), "source": item.path,
+                    "quality_score": score,
+                })
+            best = max(range(len(quality)), key=lambda idx: (quality[idx]["score"], -idx))
             profile = VoiceProfile(
                 id=f"voice-{uuid.uuid4().hex}", name=name, language=language,
                 engine=engine_name, engine_model="v3", created_at=utc_now(),
-                references=references, primary_reference=references[longest],
+                references=references, primary_reference=references[best],
                 sample_count=len(metadata), total_duration_seconds=sum(item.duration_seconds for item in metadata),
                 consent_confirmed=True,
                 metadata={
                     "source_sha256": [item.sha256 for item in metadata],
                     "warnings": [issue.message for issue in issues if issue.severity == "warning"],
                     "profile_type": "reference_audio",
+                    "reference_quality": quality,
+                    "selection_method": "signal_quality_v2",
                 },
             )
             final = self.voices.root / name
@@ -86,7 +133,10 @@ class EnrollmentService:
             else:
                 staging.rename(final)
             self.voices.save(profile, replace=True)
-            progress("enroll.completed", {"name": name, "samples": len(metadata)})
+            progress("enroll.completed", {
+                "name": name, "samples": len(metadata),
+                "primary_reference": references[best], "quality_score": quality[best]["score"],
+            })
             return profile
         finally:
             if staging.exists():
@@ -120,6 +170,8 @@ class GenerationService:
         max_chars: int = 180,
         keep_master_wav: bool = True,
         engine_override: str | None = None,
+        pronunciation_dictionary_id: str | None = None,
+        pronunciation_dictionary_name: str | None = None,
     ) -> GenerationJob:
         profile = self.voices.get(voice_name)
         document = ScriptParser().parse(script)
@@ -128,6 +180,10 @@ class GenerationService:
         job_id = f"job-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         engine_name = engine_override or profile.engine
         now = utc_now()
+        settings: dict[str, object] = {"max_chars": max_chars, "bitrate": "192k", "seed": None}
+        if pronunciation_dictionary_id:
+            settings["pronunciation_dictionary_id"] = pronunciation_dictionary_id
+            settings["pronunciation_dictionary_name"] = pronunciation_dictionary_name
         job = GenerationJob(
             id=job_id, status="segmented", created_at=now, updated_at=now,
             script_path=str(script.expanduser().resolve()), script_hash=document.source_hash,
@@ -135,7 +191,7 @@ class GenerationService:
             engine_model=profile.engine_model, language=profile.language, device=device,
             output_path=str(output.expanduser().resolve()), keep_master_wav=keep_master_wav,
             segments=segments,
-            settings={"max_chars": max_chars, "bitrate": "192k", "seed": None},
+            settings=settings,
         )
         job_dir = self.jobs.save(job)
         shutil.copy2(script.expanduser().resolve(), job_dir / f"script.original{script.suffix.lower()}")

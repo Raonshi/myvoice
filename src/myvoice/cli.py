@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import importlib.metadata
-import importlib.util
 import json
-import shutil
-import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -13,8 +9,8 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .audio import executable
 from .config import AppPaths
+from .desktop_api import diagnostic_snapshot
 from .errors import MyVoiceError
 from .services import EnrollmentService, GenerationService
 from .storage import JobRepository, VoiceProfileRepository
@@ -88,7 +84,7 @@ def enroll(
     consent: Annotated[bool, typer.Option("--i-have-rights", help="Confirm this is your voice or you have explicit permission")] = False,
     replace: Annotated[bool, typer.Option("--replace")] = False,
 ) -> None:
-    """Validate and enroll at least five 10-second voice samples."""
+    """Validate and enroll reference audio for a reusable voice profile."""
     try:
         _, voices, _, _ = dependencies()
         profile = EnrollmentService(voices).enroll(
@@ -214,21 +210,24 @@ def doctor() -> None:
     """Diagnose the local runtime without changing it."""
     paths, _, _, _ = dependencies()
     table = Table("Check", "Result", "Detail")
-    python_ok = (3, 11) <= sys.version_info[:2] < (3, 13)
-    table.add_row("Python", "OK" if python_ok else "FAIL", sys.version.split()[0])
-    table.add_row("FFmpeg", "OK" if executable("ffmpeg") else "FAIL", executable("ffmpeg") or "not found")
-    table.add_row("FFprobe", "OK" if executable("ffprobe") else "FAIL", executable("ffprobe") or "not found")
-    for package, module in (("chatterbox-tts", "chatterbox"), ("torch", "torch"), ("torchaudio", "torchaudio")):
-        found = importlib.util.find_spec(module) is not None
-        try:
-            version = importlib.metadata.version(package) if found else "not installed"
-        except importlib.metadata.PackageNotFoundError:
-            version = "installed, version unknown"
-        table.add_row(package, "OK" if found else "MISSING", version)
-    table.add_row("Data directory", "OK", str(paths.data_dir))
-    free = shutil.disk_usage(paths.data_dir).free / (1024 ** 3)
-    table.add_row("Free disk", "OK" if free >= 5 else "WARN", f"{free:.1f} GiB")
+    for check in diagnostic_snapshot(paths)["checks"]:
+        table.add_row(check["name"], check["status"].upper(), check["detail"])
     console.print(table)
+
+
+@app.command("desktop-api", hidden=True)
+def desktop_api(request: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)]) -> None:
+    """Run one machine-readable request for the native desktop app."""
+    from .desktop_api import DesktopAPI
+
+    try:
+        payload = json.loads(request.read_text(encoding="utf-8"))
+        code = DesktopAPI().run(payload)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        DesktopAPI().emit("result", ok=False, error=f"Invalid desktop request: {exc}", exit_code=2)
+        code = 2
+    if code:
+        raise typer.Exit(code)
 
 
 if __name__ == "__main__":
