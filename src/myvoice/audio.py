@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import wave
 from array import array
 from pathlib import Path
@@ -234,29 +236,83 @@ def write_silence(path: Path, milliseconds: int, sample_rate: int = 24000) -> No
 
 
 class AudioAssembler:
+    def __init__(self, sample_rate: int = 24000):
+        self.sample_rate = sample_rate
+
     def concatenate(self, segments: list[tuple[Path, int]], destination: Path) -> Path:
         if not segments:
             raise AudioToolError("No audio segments are available to assemble")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        expected: tuple[int, int, int] | None = None
-        with wave.open(str(destination), "wb") as output:
-            for path, pause_ms in segments:
-                try:
-                    with wave.open(str(path), "rb") as reader:
-                        fmt = (reader.getnchannels(), reader.getsampwidth(), reader.getframerate())
-                        if expected is None:
-                            expected = fmt
-                            output.setnchannels(fmt[0])
-                            output.setsampwidth(fmt[1])
-                            output.setframerate(fmt[2])
-                        elif fmt != expected:
-                            raise AudioToolError(f"Segment format mismatch: {path.name}")
-                        output.writeframes(reader.readframes(reader.getnframes()))
-                        pause_frames = round(fmt[2] * pause_ms / 1000)
-                        output.writeframes(b"\x00" * pause_frames * fmt[0] * fmt[1])
-                except wave.Error as exc:
-                    raise AudioToolError(f"Invalid segment WAV {path.name}: {exc}") from exc
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.stem}.", suffix=".wav", dir=destination.parent
+        )
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            if executable("ffmpeg"):
+                self._concatenate_with_ffmpeg_normalization(segments, temporary)
+            else:
+                self._concatenate_pcm_wave(segments, temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
         return destination
+
+    def _concatenate_with_ffmpeg_normalization(
+        self, segments: list[tuple[Path, int]], destination: Path
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="myvoice-assembly-", dir=destination.parent) as temp_dir:
+            normalized: list[tuple[Path, int]] = []
+            for index, (source, pause_ms) in enumerate(segments, 1):
+                target = Path(temp_dir) / f"{index:05d}.wav"
+                run_checked(
+                    [
+                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", str(source), "-map_metadata", "-1", "-ac", "1",
+                        "-ar", str(self.sample_rate), "-c:a", "pcm_s16le", str(target),
+                    ],
+                    error_context=f"Could not normalize generated segment {source.name}",
+                )
+                normalized.append((target, pause_ms))
+            self._concatenate_pcm_wave(normalized, destination)
+
+    @staticmethod
+    def _concatenate_pcm_wave(segments: list[tuple[Path, int]], destination: Path) -> None:
+        first_path = segments[0][0]
+        try:
+            with wave.open(str(first_path), "rb") as first_reader:
+                expected = (
+                    first_reader.getnchannels(),
+                    first_reader.getsampwidth(),
+                    first_reader.getframerate(),
+                )
+        except (wave.Error, OSError) as exc:
+            raise AudioToolError(f"Invalid segment WAV {first_path.name}: {exc}") from exc
+
+        try:
+            with wave.open(str(destination), "wb") as output:
+                output.setnchannels(expected[0])
+                output.setsampwidth(expected[1])
+                output.setframerate(expected[2])
+                for path, pause_ms in segments:
+                    try:
+                        with wave.open(str(path), "rb") as reader:
+                            current = (
+                                reader.getnchannels(),
+                                reader.getsampwidth(),
+                                reader.getframerate(),
+                            )
+                            if current != expected:
+                                raise AudioToolError(f"Segment format mismatch: {path.name}")
+                            output.writeframes(reader.readframes(reader.getnframes()))
+                    except (wave.Error, OSError) as exc:
+                        raise AudioToolError(f"Invalid segment WAV {path.name}: {exc}") from exc
+                    pause_frames = round(expected[2] * pause_ms / 1000)
+                    output.writeframes(
+                        b"\x00" * pause_frames * expected[0] * expected[1]
+                    )
+        except wave.Error as exc:
+            raise AudioToolError(f"Could not write master WAV: {exc}") from exc
 
 
 class AACEncoder:

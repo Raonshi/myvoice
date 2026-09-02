@@ -208,22 +208,29 @@ class GenerationService:
             if segment.status != "completed" or not segment.audio_path:
                 raise JobStateError(f"Segment {segment.id} is not complete")
             segment_files.append((job_dir / segment.audio_path, segment.pause_after_ms))
-        job.touch("assembling")
-        self.jobs.save(job)
         master = job_dir / "master.wav"
-        self.assembler.concatenate(segment_files, master)
-        progress("job.assembled", {"job_id": job.id, "master": str(master)})
-        job.touch("encoding")
-        self.jobs.save(job)
         output = Path(job.output_path)
-        self.encoder.encode(master, output, bitrate=str(job.settings.get("bitrate", "192k")))
-        if not job.keep_master_wav:
-            master.unlink(missing_ok=True)
-        job.error = None
-        job.touch("completed")
-        self.jobs.save(job)
-        progress("job.completed", {"job_id": job.id, "output": str(output)})
-        return job
+        try:
+            job.touch("assembling")
+            self.jobs.save(job)
+            self.assembler.concatenate(segment_files, master)
+            progress("job.assembled", {"job_id": job.id, "master": str(master)})
+            job.touch("encoding")
+            self.jobs.save(job)
+            self.encoder.encode(master, output, bitrate=str(job.settings.get("bitrate", "192k")))
+            if not job.keep_master_wav:
+                master.unlink(missing_ok=True)
+            job.error = None
+            job.touch("completed")
+            self.jobs.save(job)
+            progress("job.completed", {"job_id": job.id, "output": str(output)})
+            return job
+        except Exception as exc:
+            job.error = str(exc)
+            job.touch("failed")
+            self.jobs.save(job)
+            progress("job.failed", {"job_id": job.id, "error": str(exc)})
+            raise
 
     def resume(self, job_id: str, progress: ProgressCallback = _noop_progress) -> GenerationJob:
         job = self.jobs.get(job_id)

@@ -157,6 +157,23 @@ uv run pytest
 
 테스트는 실제 Chatterbox 모델 대신 짧은 PCM tone을 생성해 enrollment, segmentation, resume, regenerate, WAV assembly 경로를 검증합니다. 실제 모델 smoke test와 청취 품질 평가는 별도의 GPU/MPS 환경에서 수행해야 합니다.
 
+## 문제 해결
+
+Chatterbox는 세그먼트를 32-bit float WAV로 저장할 수 있습니다. MyVoice는 병합 전에 이를 mono 24 kHz PCM16 WAV로 자동 표준화하므로 별도 변환은 필요하지 않습니다.
+
+합성은 끝났지만 병합 또는 AAC 인코딩에서 중단된 job은 완료된 세그먼트를 다시 생성하지 않고 재개할 수 있습니다.
+
+```bash
+uv run myvoice jobs list
+uv run myvoice resume <job-id>
+```
+
+재개가 실패하면 job의 상태와 실제 오류를 확인합니다.
+
+```bash
+uv run myvoice inspect <job-id>
+```
+
 ## 제한 사항
 
 - MVP의 enrollment는 모델 fine-tuning이 아니라 전처리 reference를 저장하는 방식입니다.

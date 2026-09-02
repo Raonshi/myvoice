@@ -56,3 +56,44 @@ def test_aac_lc_encoding(tmp_path: Path) -> None:
     assert '"codec_name": "aac"' in result.stdout
     assert '"profile": "LC"' in result.stdout
     assert '"channels": 1' in result.stdout
+
+
+@pytest.mark.skipif(not executable("ffmpeg") or not executable("ffprobe"), reason="FFmpeg is not installed")
+def test_assembler_normalizes_float32_chatterbox_wav(tmp_path: Path) -> None:
+    pcm_source = tmp_path / "source-pcm16.wav"
+    float_source = tmp_path / "source-float32.wav"
+    master = tmp_path / "master.wav"
+    generate_test_tone(pcm_source, duration=0.2)
+    run_checked(
+        [
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(pcm_source), "-c:a", "pcm_f32le", str(float_source),
+        ],
+        error_context="Could not create float32 WAV fixture",
+    )
+
+    AudioAssembler().concatenate([(float_source, 100), (float_source, 0)], master)
+
+    result = run_checked(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name,sample_rate,channels", "-of", "json", str(master),
+        ],
+        error_context="Could not inspect normalized master WAV",
+    )
+    assert '"codec_name": "pcm_s16le"' in result.stdout
+    assert '"sample_rate": "24000"' in result.stdout
+    assert '"channels": 1' in result.stdout
+    assert 0.49 <= AudioProbe().probe(master).duration_seconds <= 0.51
+
+
+def test_assembler_does_not_leave_new_partial_master(tmp_path: Path, monkeypatch) -> None:
+    broken = tmp_path / "broken.wav"
+    broken.write_bytes(b"not a wave file")
+    master = tmp_path / "master.wav"
+    monkeypatch.setattr("myvoice.audio.executable", lambda _name: None)
+
+    with pytest.raises(Exception, match="Invalid segment WAV"):
+        AudioAssembler().concatenate([(broken, 0)], master)
+
+    assert not master.exists()
