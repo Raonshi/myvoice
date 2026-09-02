@@ -1,5 +1,7 @@
 # MyVoice
 
+현재 버전은 1.1.0입니다.
+
 MyVoice는 사용자 본인의 음성 샘플을 재사용 가능한 Voice Profile로 등록하고, TXT/Markdown 대본을 세그먼트별로 합성해 AAC-LC 내레이션으로 만드는 로컬 우선 CLI/TUI 프로젝트입니다.
 
 ## 현재 구현 범위
@@ -21,9 +23,14 @@ MyVoice는 사용자 본인의 음성 샘플을 재사용 가능한 Voice Profil
 - Python 3.11 또는 3.12
 - FFmpeg와 FFprobe
 - 실제 합성 시 PyTorch, torchaudio와 프로젝트가 고정한 공식 Chatterbox Git revision
-- Chatterbox 모델을 실행할 수 있는 CPU, CUDA GPU 또는 Apple Silicon MPS 환경
+- Apple Silicon Mac과 MPS 실행 환경 권장
+- Intel Mac에서는 CPU 합성 호환
 
 Chatterbox의 공식 프로젝트는 Python 3.11에서 개발·시험되었다고 안내합니다. 이 프로젝트는 3.11과 3.12를 허용하지만, TTS extra 설치가 플랫폼별 native dependency와 충돌하면 Python 3.11 환경을 우선 사용하세요. PyPI 0.1.7은 Multilingual V3 선택 인자를 포함하지 않아, 이 프로젝트는 V3 API가 포함된 공식 Git commit을 고정합니다.
+
+Apple Silicon에서는 Rosetta로 실행되는 x86_64 Python보다 네이티브 arm64 Python을 사용하세요. `--device auto`는 실제 MPS 연산을 시험한 뒤 성공하면 Apple GPU를 사용하고, 사용할 수 없으면 CPU로 전환합니다. `--device mps`를 명시한 경우에는 CPU로 조용히 전환하지 않고 진단 가능한 오류를 반환합니다.
+
+안정성을 위해 PyTorch가 지원하지 않는 일부 MPS 연산에는 CPU fallback을 허용합니다. `PYTORCH_ENABLE_MPS_FALLBACK`을 사용자가 미리 지정한 경우 그 설정을 존중합니다. 수치 정확도나 성능 회귀 위험이 있는 MPS fast-math, 강제 Metal matmul, `torch.compile`, 반정밀도 변환은 기본으로 활성화하지 않습니다.
 
 ## 설치
 
@@ -50,6 +57,8 @@ uv sync --extra dev --extra tts
 ```bash
 uv run myvoice doctor
 ```
+
+Apple Silicon에서 `MPS built`, `MPS available`, `MPS operation`, `Auto device`가 각각 `OK`, `OK`, `OK`, `mps`인지 확인하세요.
 
 ## 녹음 준비
 
@@ -158,6 +167,16 @@ uv run pytest
 테스트는 실제 Chatterbox 모델 대신 짧은 PCM tone을 생성해 enrollment, segmentation, resume, regenerate, WAV assembly 경로를 검증합니다. 실제 모델 smoke test와 청취 품질 평가는 별도의 GPU/MPS 환경에서 수행해야 합니다.
 
 ## 문제 해결
+
+Chatterbox가 출력하는 `Sampling n/1000`의 1000은 완료해야 하는 작업량이 아니라 생성 가능한 최대 speech token 수입니다. 자연스러운 발화 종료를 뜻하는 EOS token이 나오면 100% 이전에 Sampling이 끝나고 다음 단계로 진행하는 것이 정상입니다. 1000/1000에 도달하는 경우가 반복되거나 긴 무음이 생성된다면 정상적인 조기 종료가 아니므로 해당 segment를 다시 생성하고 입력 문장을 더 짧게 나누세요.
+
+MyVoice 1.1.0은 같은 작업의 segment마다 동일한 reference 음성을 다시 분석하지 않고 준비된 화자 조건을 메모리에서 재사용합니다. reference 파일, 장치 또는 exaggeration이 바뀌면 조건을 자동으로 다시 준비합니다.
+
+MPS를 명시했는데 사용할 수 없다는 오류가 나오면 다음 명령으로 네이티브 arm64 실행과 실제 MPS 연산 결과를 확인하세요.
+
+```bash
+uv run myvoice doctor
+```
 
 Chatterbox는 세그먼트를 32-bit float WAV로 저장할 수 있습니다. MyVoice는 병합 전에 이를 mono 24 kHz PCM16 WAV로 자동 표준화하므로 별도 변환은 필요하지 않습니다.
 

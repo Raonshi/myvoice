@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import json
+import platform
 import shutil
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from .config import AppPaths
 from .errors import MyVoiceError
 from .services import EnrollmentService, GenerationService
 from .storage import JobRepository, VoiceProfileRepository
+from .tts import inspect_mps_runtime, resolve_torch_device
 
 
 console = Console()
@@ -225,6 +227,30 @@ def doctor() -> None:
         except importlib.metadata.PackageNotFoundError:
             version = "installed, version unknown"
         table.add_row(package, "OK" if found else "MISSING", version)
+    if platform.system() == "Darwin":
+        machine = platform.machine()
+        native = machine == "arm64"
+        table.add_row(
+            "macOS",
+            "OK",
+            f"{platform.mac_ver()[0] or 'unknown'} · {machine}",
+        )
+        table.add_row(
+            "Apple Silicon",
+            "OK" if native else "WARN",
+            "native arm64" if native else "Intel or Rosetta; synthesis will use CPU",
+        )
+        if importlib.util.find_spec("torch") is not None:
+            import torch
+
+            mps = inspect_mps_runtime(torch)
+            table.add_row("MPS built", "OK" if mps.built else "FAIL", str(mps.built))
+            table.add_row("MPS available", "OK" if mps.available else "WARN", str(mps.available))
+            table.add_row("MPS operation", "OK" if mps.functional else "WARN", mps.detail)
+            selected = resolve_torch_device(
+                "auto", torch, system_name="Darwin", machine=machine
+            )
+            table.add_row("Auto device", "OK" if selected == "mps" else "WARN", selected)
     table.add_row("Data directory", "OK", str(paths.data_dir))
     free = shutil.disk_usage(paths.data_dir).free / (1024 ** 3)
     table.add_row("Free disk", "OK" if free >= 5 else "WARN", f"{free:.1f} GiB")
