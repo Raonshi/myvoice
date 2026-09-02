@@ -41,6 +41,18 @@ def test_default_validator_accepts_one_short_audio_file(tmp_path: Path) -> None:
     assert not [item for item in issues if item.severity == "fail"]
 
 
+def test_executable_finds_homebrew_style_fallback_outside_gui_path(tmp_path: Path, monkeypatch) -> None:
+    binary_directory = tmp_path / "homebrew" / "bin"
+    binary_directory.mkdir(parents=True)
+    binary = binary_directory / "ffprobe"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+    monkeypatch.setattr("myvoice.audio.shutil.which", lambda _name: None)
+    monkeypatch.setattr("myvoice.audio.FALLBACK_EXECUTABLE_DIRECTORIES", (binary_directory,))
+
+    assert executable("ffprobe") == str(binary.resolve())
+
+
 @pytest.mark.skipif(not executable("ffmpeg") or not executable("ffprobe"), reason="FFmpeg is not installed")
 def test_enrollment_accepts_explicit_aac_mp3_and_m4a_files(tmp_path: Path) -> None:
     source = tmp_path / "source.wav"

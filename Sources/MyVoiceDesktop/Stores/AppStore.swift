@@ -9,7 +9,7 @@ final class AppStore: ObservableObject {
     @Published var pronunciationDictionaries: [PronunciationDictionaryRecord] = []
     @Published var importedPronunciationDictionary: PronunciationDictionaryRecord?
     @Published var doctor: DoctorSnapshot?
-    @Published var version = "2.1.0"
+    @Published var version = "2.1.1"
     @Published var dataDirectory = ""
     @Published var isWorking = false
     @Published var activity = "준비됨"

@@ -3,9 +3,9 @@ import XCTest
 
 final class BackendModelsTests: XCTestCase {
     func testSnapshotDecodesPythonSnakeCasePayload() throws {
-        let json = #"{"version":"2.1.0","data_dir":"/tmp/myvoice","voices":[{"id":"v1","name":"voice","language":"ko","engine":"chatterbox_multilingual","engine_model":"v3","created_at":"now","references":["references/001.wav"],"primary_reference":"references/001.wav","sample_count":1,"total_duration_seconds":8.0,"consent_confirmed":true,"schema_version":1,"metadata":{}}],"jobs":[],"pronunciation_dictionaries":[{"id":"dictionary-1","name":"카메라","language":"ko","entries":[{"source":"Nikon","pronunciation":"니콘"}],"created_at":"now","updated_at":"now","schema_version":1}]}"#
+        let json = #"{"version":"2.1.1","data_dir":"/tmp/myvoice","voices":[{"id":"v1","name":"voice","language":"ko","engine":"chatterbox_multilingual","engine_model":"v3","created_at":"now","references":["references/001.wav"],"primary_reference":"references/001.wav","sample_count":1,"total_duration_seconds":8.0,"consent_confirmed":true,"schema_version":1,"metadata":{}}],"jobs":[],"pronunciation_dictionaries":[{"id":"dictionary-1","name":"카메라","language":"ko","entries":[{"source":"Nikon","pronunciation":"니콘"}],"created_at":"now","updated_at":"now","schema_version":1}]}"#
         let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: Data(json.utf8))
-        XCTAssertEqual(snapshot.version, "2.1.0")
+        XCTAssertEqual(snapshot.version, "2.1.1")
         XCTAssertEqual(snapshot.voices.first?.primaryReference, "references/001.wav")
         XCTAssertEqual(snapshot.pronunciationDictionaries.first?.entries.first?.source, "Nikon")
     }

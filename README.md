@@ -1,6 +1,6 @@
 # MyVoice
 
-현재 버전은 2.1.0입니다.
+현재 버전은 2.1.1입니다.
 
 MyVoice는 사용자 본인의 음성 샘플을 재사용 가능한 Voice Profile로 등록하고, TXT/Markdown 대본을 세그먼트별로 합성해 AAC-LC 내레이션으로 만드는 로컬 우선 macOS 데스크톱/CLI 프로젝트입니다.
 
@@ -144,7 +144,7 @@ uv run myvoice regenerate <job-id> seg-0023
 uv run myvoice regenerate <job-id> seg-0023 --text "수정한 낭독 문장입니다."
 ```
 
-기존 CLI 인터페이스는 2.1.0에서도 그대로 유지됩니다. 인자 없이 실행하면 현재 Bash/Zsh 터미널 안에서 숫자로 조작하는 메뉴가 열립니다.
+기존 CLI 인터페이스는 2.1.1에서도 그대로 유지됩니다. 인자 없이 실행하면 현재 Bash/Zsh 터미널 안에서 숫자로 조작하는 메뉴가 열립니다.
 
 ```bash
 uv run myvoice
@@ -199,6 +199,8 @@ swift test
 테스트는 실제 Chatterbox 모델 대신 짧은 PCM tone을 생성해 enrollment, segmentation, resume, regenerate, WAV assembly 경로를 검증합니다. 실제 모델 smoke test와 청취 품질 평가는 별도의 GPU/MPS 환경에서 수행해야 합니다.
 
 ## 문제 해결
+
+Finder 등에서 실행한 macOS 앱은 셸의 `PATH`를 그대로 상속하지 않을 수 있습니다. MyVoice 2.1.1부터는 현재 `PATH` 외에도 Apple Silicon Homebrew의 `/opt/homebrew/bin`, Intel Homebrew의 `/usr/local/bin`, 시스템의 `/usr/bin`에서 FFmpeg와 FFprobe를 찾습니다. 별도 위치의 바이너리를 사용한다면 `MYVOICE_FFMPEG`와 `MYVOICE_FFPROBE`에 절대 경로를 지정할 수 있습니다.
 
 Chatterbox의 `Sampling n/1000`에서 1000은 완료해야 하는 작업량이 아니라 생성 가능한 최대 speech token 수입니다. MyVoice는 이를 완료율로 오해하지 않도록 Sampling 진행 표시에서 퍼센트와 진행 막대를 제거하고 생성 토큰 수·경과 시간·속도만 표시합니다. 자연스러운 발화 종료를 뜻하는 EOS token이 나오면 1000 이전에 Sampling이 끝나고 다음 단계로 진행하는 것이 정상입니다. 1000/1000에 도달하는 경우가 반복되거나 긴 무음이 생성된다면 정상적인 조기 종료가 아니므로 해당 segment를 다시 생성하고 입력 문장을 더 짧게 나누세요.
 

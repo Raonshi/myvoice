@@ -20,6 +20,11 @@ from .models import AudioMetadata, ValidationIssue
 
 
 SUPPORTED_EXTENSIONS = {".wav", ".wave", ".flac", ".aac", ".m4a", ".mp3", ".ogg"}
+FALLBACK_EXECUTABLE_DIRECTORIES = (
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+    Path("/usr/bin"),
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -31,7 +36,16 @@ def sha256_file(path: Path) -> str:
 
 
 def executable(name: str) -> str | None:
-    return shutil.which(name)
+    override = os.environ.get(f"MYVOICE_{name.upper()}")
+    candidates = [Path(override).expanduser()] if override else []
+    discovered = shutil.which(name)
+    if discovered:
+        candidates.append(Path(discovered))
+    candidates.extend(directory / name for directory in FALLBACK_EXECUTABLE_DIRECTORIES)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve())
+    return None
 
 
 def run_checked(args: list[str], *, error_context: str) -> subprocess.CompletedProcess[str]:
@@ -49,20 +63,22 @@ class AudioProbe:
         path = path.expanduser().resolve()
         if not path.is_file():
             raise InputValidationError(f"Audio file does not exist: {path}")
-        if executable("ffprobe"):
-            metadata = self._probe_ffmpeg(path)
-            if executable("ffmpeg"):
-                peak, silence_ratio = self._quality_ffmpeg(path, metadata.duration_seconds)
+        ffprobe = executable("ffprobe")
+        if ffprobe:
+            metadata = self._probe_ffmpeg(path, ffprobe)
+            ffmpeg = executable("ffmpeg")
+            if ffmpeg:
+                peak, silence_ratio = self._quality_ffmpeg(path, metadata.duration_seconds, ffmpeg)
                 metadata = replace(metadata, peak_dbfs=peak, silence_ratio=silence_ratio)
             return metadata
         if path.suffix.lower() in {".wav", ".wave"}:
             return self._probe_wave(path)
         raise AudioToolError("ffprobe is required for non-WAV audio files")
 
-    def _probe_ffmpeg(self, path: Path) -> AudioMetadata:
+    def _probe_ffmpeg(self, path: Path, ffprobe: str) -> AudioMetadata:
         result = run_checked(
             [
-                "ffprobe", "-v", "error", "-select_streams", "a:0",
+                ffprobe, "-v", "error", "-select_streams", "a:0",
                 "-show_entries", "stream=codec_name,sample_rate,channels:format=duration",
                 "-of", "json", str(path),
             ],
@@ -97,10 +113,10 @@ class AudioProbe:
             peak_dbfs=peak_dbfs, sha256=sha256_file(path),
         )
 
-    def _quality_ffmpeg(self, path: Path, duration: float) -> tuple[float | None, float | None]:
+    def _quality_ffmpeg(self, path: Path, duration: float, ffmpeg: str) -> tuple[float | None, float | None]:
         result = run_checked(
             [
-                "ffmpeg", "-nostdin", "-hide_banner", "-i", str(path),
+                ffmpeg, "-nostdin", "-hide_banner", "-i", str(path),
                 "-af", "silencedetect=noise=-45dB:d=0.35,volumedetect", "-f", "null", "-",
             ],
             error_context=f"Could not analyze {path.name}",
@@ -198,10 +214,11 @@ class AudioPreprocessor:
 
     def process(self, source: Path, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if executable("ffmpeg"):
+        ffmpeg = executable("ffmpeg")
+        if ffmpeg:
             run_checked(
                 [
-                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                     "-i", str(source), "-map_metadata", "-1", "-ac", "1", "-ar", str(self.sample_rate),
                     "-af", (
                         "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,"
@@ -300,8 +317,9 @@ class AudioAssembler:
         os.close(fd)
         temporary = Path(temporary_name)
         try:
-            if executable("ffmpeg"):
-                self._concatenate_with_ffmpeg_normalization(segments, temporary)
+            ffmpeg = executable("ffmpeg")
+            if ffmpeg:
+                self._concatenate_with_ffmpeg_normalization(segments, temporary, ffmpeg)
             else:
                 self._concatenate_pcm_wave(segments, temporary)
             os.replace(temporary, destination)
@@ -310,7 +328,7 @@ class AudioAssembler:
         return destination
 
     def _concatenate_with_ffmpeg_normalization(
-        self, segments: list[tuple[Path, int]], destination: Path
+        self, segments: list[tuple[Path, int]], destination: Path, ffmpeg: str
     ) -> None:
         with tempfile.TemporaryDirectory(prefix="myvoice-assembly-", dir=destination.parent) as temp_dir:
             normalized: list[tuple[Path, int]] = []
@@ -318,7 +336,7 @@ class AudioAssembler:
                 target = Path(temp_dir) / f"{index:05d}.wav"
                 run_checked(
                     [
-                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                         "-i", str(source), "-map_metadata", "-1", "-ac", "1",
                         "-ar", str(self.sample_rate), "-c:a", "pcm_s16le", str(target),
                     ],
@@ -368,12 +386,13 @@ class AudioAssembler:
 
 class AACEncoder:
     def encode(self, source_wav: Path, destination: Path, bitrate: str = "192k") -> Path:
-        if not executable("ffmpeg"):
+        ffmpeg = executable("ffmpeg")
+        if not ffmpeg:
             raise AudioToolError("FFmpeg is required to encode AAC-LC output")
         destination.parent.mkdir(parents=True, exist_ok=True)
         run_checked(
             [
-                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source_wav),
+                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source_wav),
                 "-c:a", "aac", "-profile:a", "aac_low", "-b:a", bitrate, "-ac", "1", "-f", "adts", str(destination),
             ],
             error_context="AAC-LC encoding failed",
